@@ -1,0 +1,154 @@
+"""J+ROCK main entrypoint.
+
+Usage:
+    python main.py                    # Telegram bot (default)
+    python main.py --cli              # Interactive CLI
+    python main.py --scan             # One-shot scan and report
+    python main.py --verify           # Verify codebase integrity
+
+Environment: set TELEGRAM_BOT_TOKEN (and optionally LLM_* vars) in .env
+"""
+from __future__ import annotations
+
+import argparse
+import asyncio
+import logging
+import os
+import sys
+from pathlib import Path
+
+# Load .env before anything else.
+_env = Path(__file__).resolve().parent / ".env"
+if _env.exists():
+    for line in _env.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if line and not line.startswith("#") and "=" in line:
+            k, _, v = line.partition("=")
+            os.environ.setdefault(k.strip(), v.strip())
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    handlers=[
+        logging.StreamHandler(),
+        logging.FileHandler(
+            Path(os.environ.get("JRROCK_STATE_DIR", "./state")) / "agent.log",
+            mode="a", encoding="utf-8", delay=True
+        ),
+    ],
+)
+log = logging.getLogger("jrrock")
+
+
+def build_engine():
+    from adapters.bitunix import BitunixClient
+    from engine.settings import EngineSettings
+    from engine.engine import Engine
+    client = BitunixClient()
+    settings = EngineSettings.load()
+    return client, settings, Engine(client, settings)
+
+
+def build_agent(engine):
+    from agent.llm import LLMConfig
+    from agent.runtime import AgentRuntime
+    from commands.handlers import build_registry
+    config = LLMConfig.from_env()
+    registry = build_registry()
+    return AgentRuntime(engine, registry, config)
+
+
+async def run_telegram(agent):
+    token = os.environ.get("TELEGRAM_BOT_TOKEN", "")
+    if not token:
+        log.error("TELEGRAM_BOT_TOKEN not set. Set it in .env and restart.")
+        sys.exit(1)
+    from bots.telegram import TelegramBot
+    bot = TelegramBot(token, agent_factory=lambda: asyncio.coroutine(lambda: agent)())
+    # Inject agent directly since it's already built.
+    bot._agent = agent
+    bot._agent._confirm = bot._confirmation_gate
+    log.info("Starting Telegram bot (long-polling)…")
+    await bot.start_polling()
+
+
+async def run_cli(agent):
+    """Minimal interactive CLI."""
+    print("J+ROCK CLI  (type /help for commands, Ctrl+C to quit)")
+    while True:
+        try:
+            line = input("→ ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print("\nBye.")
+            break
+        if not line:
+            continue
+        buffer = []
+        async for chunk in agent.handle(line):
+            print(chunk, end="", flush=True)
+            buffer.append(chunk)
+        print()
+
+
+async def run_scan(engine):
+    signals = await engine.scan_once()
+    if not signals:
+        print("No qualifying signals.")
+    else:
+        print(f"{len(signals)} signal(s):")
+        for s in signals:
+            print(f"  {s}")
+
+
+async def amain():
+    parser = argparse.ArgumentParser(description="J+ROCK trading agent")
+    parser.add_argument("--cli", action="store_true", help="Interactive CLI")
+    parser.add_argument("--scan", action="store_true", help="One-shot scan")
+    parser.add_argument("--verify", action="store_true", help="Verify codebase")
+    parser.add_argument("--discover-models", action="store_true", help="Auto-discover working models")
+    args = parser.parse_args()
+
+    client, settings, engine = build_engine()
+    agent = build_agent(engine)
+
+    if args.verify:
+        result = await agent.verify("all")
+        print(result)
+        return
+
+    if args.discover_models:
+        base = os.environ.get("LLM_BASE_URL", "")
+        key = os.environ.get("LLM_API_KEY", "")
+        if not key:
+            print("LLM_API_KEY not set.")
+            return
+        from agent.autoset import discover_models
+        models = await discover_models(base, key)
+        for m in models:
+            s = "✅" if m.working else "❌"
+            print(f"  {s} {m.id}  latency={m.latency_ms:.0f}ms")
+        return
+
+    if args.scan:
+        await run_scan(engine)
+        return
+
+    if args.cli:
+        await run_cli(agent)
+        return
+
+    # Default: Telegram bot.
+    await run_telegram(agent)
+
+
+def main():
+    # Ensure relative imports work by running from the jrrock dir.
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    try:
+        asyncio.run(amain())
+    except KeyboardInterrupt:
+        log.info("Shutdown.")
+
+
+if __name__ == "__main__":
+    main()

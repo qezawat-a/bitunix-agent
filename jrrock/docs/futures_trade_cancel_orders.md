@@ -1,0 +1,62 @@
+<!-- Bitunix doc: /futures/trade/cancel_orders | source: https://www.bitunix.com/api-docs/futures/trade/cancel_orders.html -->
+# Cancel Orders
+
+# Cancel Orders [​](#cancel-orders)
+
+Rate Limit: 10 req/sec/uid
+
+### Description [​](#description)
+
+Cancel orders 
+Successful interface response is not necessarily equal to the success of the operation, please use the websocket push message as an accurate judgment of the success of the operation.
+
+### HTTP Request [​](#http-request)
+
+- POST /api/v1/futures/trade/cancel\_orders
+
+### Request Parameters [​](#request-parameters)
+
+| Parameter | Type | Required | Description |
+| --- | --- | --- | --- |
+| symbol | string | true | Trading pair |
+| orderList | list | true | order parameter list |
+| orderId | string | false | Order ID Either orderId or clientId is required. If both are entered, orderId prevails. |
+| clientId | string | false | Customize order ID Either orderId or clientId is required. If both are entered, orderId prevails. |
+
+Request Example
+
+bash
+
+```
+curl -X 'POST' --location 'https://fapi.bitunix.com/api/v1/futures/trade/cancel_orders' \\
+ -H "api-key:*******" \\
+ -H "sign:*" \\
+ -H "nonce:your-nonce" \\
+ -H "timestamp:1659076670000" \\
+ -H "language:en-US" \\
+ -H "Content-Type: application/json" \\
+ --data '{"symbol":"BTCUSDT","orderList":[{"orderId":"11111"},{"clientId":"22223"}]}'
+```
+
+### Response Parameters [​](#response-parameters)
+
+| Parameter | Type | Description |
+| --- | --- | --- |
+| successList | list | Successful order list |
+| >id | string | order id |
+| >clientId | string | client id |
+| failureList | list | Failed order list |
+| >id | string | order id |
+| >clientId | string | client id |
+| >errorMsg | string | error msg |
+| >errorCode | string | error code |
+
+Response Example
+
+json
+
+```
+{"code":0,"data":{"successList":[{"orderId":"11111","clientId":"22222"}],"failureList":[{"orderId":"11112","clientId":"22223","errorMsg":"Order status error","errorCode":10013}]},"msg":"Success"}
+```
+
+`,14
