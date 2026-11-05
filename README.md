@@ -11,7 +11,7 @@ A full-stack autonomous trading agent and Bitunix futures engine, controlled via
 - **Self-editing agent**: reads/writes its own source with confirmation gate; `/code_review`, `/bug_fix`, `/diagnose`
 - **AutoSetModelByKey**: auto-discovers working LLM models for your API key/endpoint
 - **Soul & skills system**: swappable agent personas (`/soul`), injectable skills (`/skill`)
-- **Telegram bot**: streaming replies, inline Approve/Reject buttons for live orders and self-edits
+- **Telegram bot**: python-telegram-bot (async, long polling), streaming replies, inline Approve/Reject buttons for live orders and self-edits
 
 ## Quick Start
 
@@ -45,7 +45,7 @@ jrock/           The `jrock` package (import as `jrock.<module>`)
   risk/        Liquidation math, position sizing, pre-trade risk checks
   agent/       LLM client, AutoSetModelByKey, agent runtime, memory
   commands/    Slash-command registry + all 35 command handlers
-  bots/        Telegram bot (raw httpx, streaming, inline keyboards)
+  bots/        Telegram bot (python-telegram-bot: streaming, inline keyboards)
   soul/        Agent persona files (jrock_default, aggressive_trader)
   skills/      Injectable skill files (risk_audit, signal_explain)
   state/       Persistent JSON settings, trade journal, memory
