@@ -86,6 +86,63 @@ async def cmd_set_model(
     return _err("Usage: /set_model [model_id] [base_url=...] [api_key=...]")
 
 
+async def cmd_automodelsetbykey(
+    base_url: str = "",
+    api_key: str = "",
+    max_probe: str = "20",
+    *,
+    engine: "Engine",
+    agent: "AgentRuntime",
+    **_,
+) -> CommandResult:
+    """AutoSetModelByKey: probe all models for the given key and set the best one.
+
+    Usage: /automodelsetbykey [base_url=...] [api_key=...] [max_probe=20]
+    Falls back to the agent's current LLM config if base_url/api_key omitted.
+    """
+    b = base_url or agent.llm_config.base_url
+    k = api_key or agent.llm_config.api_key
+    if not b or not k:
+        return _err(
+            "No base_url or api_key provided, and none configured in LLM config. "
+            "Usage: /automodelsetbykey base_url=... api_key=... [max_probe=20]"
+        )
+
+    try:
+        mp = int(max_probe)
+    except ValueError:
+        mp = 20
+
+    from jrock.agent.autoset import discover_models
+
+    discovered = await discover_models(b, k, max_probe=mp)
+    agent.discovered_models = discovered
+
+    working = [m for m in discovered if m.working]
+    if not working:
+        return _err(
+            f"No working models found for key at {b}. "
+            f"Probed {len(discovered)} candidates, all failed."
+        )
+
+    best = working[0]
+    agent.llm_config.base_url = b
+    agent.llm_config.api_key = k
+    agent.llm_config.model_id = best.id
+    await engine.update_settings(model_id=best.id, base_url=b)
+
+    lines = [
+        f"✅ AutoSetModelByKey complete: `{best.id}`",
+        f"   Latency: {best.latency_ms:.0f}ms  Context: {best.context_window}  Score: {best.score:.1f}",
+        f"   Working models: {len(working)}/{len(discovered)}",
+    ]
+    for m in working[1:6]:
+        lines.append(f"   ✅ `{m.id}` latency={m.latency_ms:.0f}ms score={m.score:.1f}")
+    if len(working) > 6:
+        lines.append(f"   ... and {len(working) - 6} more")
+    return _ok("\n".join(lines), data=discovered)
+
+
 async def cmd_connect_provider(
     provider: str = "",
     base_url: str = "",
@@ -618,6 +675,11 @@ def build_registry() -> CommandRegistry:
         CommandDef("models", cmd_models, "List discovered models", category="agent"),
         CommandDef("set_model", cmd_set_model, "Set active model or auto-discover",
                    args_schema="[model_id] [base_url=...] [api_key=...]", category="agent"),
+        CommandDef("automodelsetbykey", cmd_automodelsetbykey,
+                   "Auto-probe models by API key and set the best one",
+                   args_schema="[base_url=...] [api_key=...] [max_probe=20]",
+                   aliases=["autoset", "probe_models", "autodiscover"],
+                   category="agent"),
         CommandDef("connect_provider", cmd_connect_provider, "Configure an LLM provider",
                    args_schema="provider=openai base_url=... api_key=...", category="agent"),
         CommandDef("think", cmd_think, "Deep reasoning on a topic", args_schema="[topic]", category="agent"),
