@@ -213,10 +213,11 @@ class Executor:
         except BitunixError as e:
             log.warning("leverage set failed: %s", e)
 
+        # Apply the configured margin mode (ISOLATED/CROSS) to the exchange.
         try:
-            await self._client.change_margin_mode(sym, "ISOLATED")
+            await self._client.change_margin_mode(sym, s.margin_mode)
         except BitunixError as e:
-            log.warning("margin mode: %s (may already be set)", e)
+            log.warning("margin mode set to %s failed: %s (may already be set)", s.margin_mode, e)
 
         # 6. Place the order.
         side = "BUY" if signal.direction == "LONG" else "SELL"

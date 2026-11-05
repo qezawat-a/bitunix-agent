@@ -721,6 +721,29 @@ async def cmd_max_positions(
     return _ok(f"Max open positions set to {new_val} (was {before}).")
 
 
+async def cmd_position_mode(
+    mode: str = "",
+    *,
+    engine: "Engine",
+    **_,
+) -> CommandResult:
+    """Get or set account-wide position mode (HEDGE / ONE_WAY)."""
+    if not mode:
+        return _ok(f"Position mode: {engine._settings.position_mode}")
+    mode = mode.upper()
+    if mode not in ("HEDGE", "ONE_WAY"):
+        return _err("Mode must be HEDGE or ONE_WAY")
+    before = engine._settings.position_mode
+    changed = await engine.update_settings(position_mode=mode)
+    if "position_mode" not in changed:
+        return _ok(f"Position mode already {mode} (no change).")
+    try:
+        await engine._client.change_position_mode(mode)
+    except BitunixError as e:
+        return _ok(f"Settings updated ({before} → {mode}) but live set failed: {e}")
+    return _ok(f"Position mode set to {mode} (was {before}).")
+
+
 async def cmd_settings_trade(*, engine: "Engine", **_) -> CommandResult:
     """Real-time trading configuration snapshot (SECTION 4: Settings trade).
 
@@ -930,6 +953,7 @@ def build_registry() -> CommandRegistry:
         CommandDef("symbols", cmd_symbols, "Get/set active symbols", args_schema="[SYM1 SYM2 ...]", category="engine"),
         CommandDef("margin", cmd_margin, "Get/set margin mode", args_schema="[ISOLATION|ISOLATED|CROSS] [symbol=...]", category="engine"),
         CommandDef("max_positions", cmd_max_positions, "Get/set max open positions cap", args_schema="<number>", category="engine"),
+        CommandDef("position_mode", cmd_position_mode, "Get/set account position mode (HEDGE/ONE_WAY)", args_schema="[HEDGE|ONE_WAY]", category="engine"),
         CommandDef("reversal", cmd_reversal, "Reversal settings", args_schema="[true|false] [confidence=N]", category="engine"),
         CommandDef("mid_management", cmd_mid_management, "Trigger mid-position management", args_schema="[symbol]", category="engine"),
     ]
