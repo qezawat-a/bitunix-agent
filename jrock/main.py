@@ -53,23 +53,46 @@ async def build_agent(engine):
     from jrock.agent.llm import LLMConfig
     from jrock.agent.runtime import AgentRuntime
     from jrock.commands.handlers import build_registry
+    from jrock.agent.autoset import discover_models
+
     config = LLMConfig.from_env()
+
+    # AutoSetModelByKey: scan .env / environment for BASE_URL + API_KEY aliases
+    # (in addition to LLM_BASE_URL / LLM_API_KEY) so the agent auto-detects and
+    # switches to a valid model for whatever credentials package is configured.
+    base_url = os.environ.get("BASE_URL") or os.environ.get("LLM_BASE_URL") or ""
+    api_key = os.environ.get("API_KEY") or os.environ.get("LLM_API_KEY") or ""
+    if base_url and api_key:
+        os.environ.setdefault("LLM_BASE_URL", base_url)
+        os.environ.setdefault("LLM_API_KEY", api_key)
+        config.base_url = base_url
+        config.api_key = api_key
+
     registry = build_registry()
     agent = AgentRuntime(engine, registry, config)
-    # Auto-discover models if no model is set but credentials are available.
-    if not agent.llm_config.model_id and agent.llm_config.base_url and agent.llm_config.api_key:
+
+    # Always attempt discovery on boot when credentials exist (even if a model is
+    # already set), so an invalid/ stale model gets replaced by a working one.
+    if base_url and api_key:
         try:
-            from jrock.agent.autoset import discover_models
-            discovered = await discover_models(agent.llm_config.base_url, agent.llm_config.api_key)
+            discovered = await discover_models(config.base_url, config.api_key)
             working = [m for m in discovered if m.working]
+            agent.discovered_models = discovered
             if working:
-                agent.llm_config.model_id = working[0].id
-                agent.discovered_models = discovered
-                await engine.update_settings(model_id=working[0].id, base_url=agent.llm_config.base_url)
+                best = working[0]
+                if not config.model_id or config.model_id not in {m.id for m in working}:
+                    config.model_id = best.id
+                    agent.llm_config.model_id = best.id
+                await engine.update_settings(model_id=config.model_id, base_url=config.base_url)
                 import logging
                 logging.getLogger("jrock").info(
                     "AutoSetModelByKey: selected %s (%d working models)",
-                    working[0].id, len(working),
+                    best.id, len(working),
+                )
+            else:
+                import logging
+                logging.getLogger("jrock").warning(
+                    "AutoSetModelByKey: no working models found for configured key/endpoint"
                 )
         except Exception as e:
             import logging

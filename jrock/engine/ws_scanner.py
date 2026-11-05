@@ -120,7 +120,7 @@ class WsScanner:
         self.prices[ev.symbol] = ev.close
 
         # Only run strategies on confirmed (closed) candles.
-        if not ev.confirm:
+        if not ev.closed:
             return
 
         await self._run_strategies(ev.symbol, ev.interval)

@@ -1,0 +1,40 @@
+<!-- Bitunix official doc: /tp_sl/modify_position_tp_sl_order | source: https://www.bitunix.com/api-docs/futures/tp_sl/modify_position_tp_sl_order.html -->
+
+# modify_position_tp_sl_order
+
+Modify Position TP/SL Order ​ 
+ Rate Limit: 20 req/sec/UID
+ Description ​ 
+ Modify Position TP/SL Order
+ HTTP Request ​ 
+ POST /api/v1/futures/tpsl/position/modify_order
+ Request Parameters ​ 
+ Parameter Type Required Description 
+ symbol string true Trading pair 
+ positionId string true Position ID associated with take-profit and stop-loss 
+ tpPrice string false Take-profit trigger price
+At least one of tpPrice or slPrice is required. 
+ tpStopType string false Take-profit trigger type
+LAST_PRICE
+MARK_PRICE
+ Default is market price. 
+ slPrice string false Stop-loss trigger price
+At least one of tpPrice or slPrice is required. 
+ slStopType string false Stop-loss trigger type
+LAST_PRICE
+MARK_PRICE
+ Default is market price. 
+ Request Example
+ bash curl -X 'POST' --location 'https://fapi.bitunix.com/api/v1/futures/tpsl/position/modify_order' \ 
+ -H "api-key:*******" \ 
+ -H "sign:*" \ 
+ -H "nonce:your-nonce" \ 
+ -H "timestamp:1659076670000" \ 
+ -H "language:en-US" \ 
+ -H "Content-Type: application/json" \ 
+ --data '{"symbol":"BTCUSDT","positionId":"11","tpPrice":"12","tpStopType":"LAST_PRICE","slPrice":"9","slStopType":"LAST_PRICE"}' 
+ Response Parameters ​ 
+ Parameter Type Description 
+ orderId string TP/SL Order ID 
+ Response Example
+ json { "code" : 0 , "data" :{ "orderId" : "11111" }, "msg" : "Success" }

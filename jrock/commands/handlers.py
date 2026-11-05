@@ -13,6 +13,7 @@ import os
 import subprocess
 import sys
 import textwrap
+from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Optional, TYPE_CHECKING
 
@@ -21,6 +22,8 @@ from .registry import CommandRegistry, CommandDef, CommandResult
 if TYPE_CHECKING:
     from jrock.engine.engine import Engine
     from jrock.agent.runtime import AgentRuntime
+
+from jrock.agent.git_push import GitPusher
 
 
 def _ok(text: str, data: Any = None) -> CommandResult:
@@ -411,6 +414,37 @@ async def cmd_team_spawn(
     return _ok("**Team results:**\n" + "\n".join(results))
 
 
+async def cmd_git_push(
+    *args,
+    agent: "AgentRuntime",
+    **_,
+) -> CommandResult:
+    """Force-push verified code assets to GitHub via PAT + repo link.
+
+    Usage: /git_push [message="..."] [branch=main]
+    Requires GITHUB_PAT and GITHUB_REPO env vars (set via /env or .env).
+    """
+    message = "chore(jrock): auto-push verified code assets"
+    branch = "main"
+    for a in args:
+        if a.startswith("message="):
+            message = a.split("=", 1)[1]
+        elif a.startswith("branch="):
+            branch = a.split("=", 1)[1]
+
+    pusher = GitPusher()
+    if not pusher.is_configured():
+        return _err(
+            "Git push not configured. Set GITHUB_PAT and GITHUB_REPO "
+            "(or GIT_REPO_LINK) in .env / environment."
+        )
+
+    result = await pusher.push_verified_assets(message=message, branch=branch)
+    if result.ok:
+        return _ok(result.message, data=asdict(result))
+    return _err(result.message)
+
+
 # ------------------------------------------------------------------ #
 # Engine trading commands                                             #
 # ------------------------------------------------------------------ #
@@ -717,6 +751,7 @@ def build_registry() -> CommandRegistry:
         CommandDef("autopsy", cmd_autopsy, "Analyze trade journal for patterns", category="selfheal"),
         CommandDef("diagnose", cmd_diagnose, "Diagnose a specific issue", args_schema="[description]", category="selfheal"),
         CommandDef("team_spawn", cmd_team_spawn, "Spawn parallel sub-agents", args_schema="task1 task2 ...", category="selfheal"),
+        CommandDef("git_push", cmd_git_push, "Force-push verified code assets to GitHub (PAT + repo link)", args_schema="[message=...] [branch=main]", category="selfheal"),
         # Engine
         CommandDef("engine", cmd_engine, "Engine control", args_schema="[on|off|status]", category="engine"),
         CommandDef("status", cmd_status, "Engine status", aliases=["s"], category="engine"),
