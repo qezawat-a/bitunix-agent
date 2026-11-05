@@ -20,11 +20,11 @@ from typing import Optional, Callable, Awaitable
 from ..adapters.bitunix import BitunixClient
 from ..adapters.ws_public import PublicWsClient
 from ..adapters.ws_private import PrivateWsClient
-from ..engine.scanner import Scanner
-from ..engine.ws_scanner import WsScanner
-from ..engine.types import AggregatedSignal
-from ..engine.executor import Executor, TradeResult
-from ..engine.settings import EngineSettings, STATE_DIR
+from .scanner import Scanner
+from .ws_scanner import WsScanner
+from .types import AggregatedSignal
+from .executor import Executor, TradeResult
+from .settings import EngineSettings, STATE_DIR
 
 log = logging.getLogger(__name__)
 

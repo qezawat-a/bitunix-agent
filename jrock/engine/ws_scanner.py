@@ -19,7 +19,7 @@ from typing import Optional
 
 from ..adapters.ws_public import PublicWsClient, KlineEvent, TickerEvent
 from ..adapters.ws_private import PrivateWsClient, PositionEvent, OrderEvent, TpSlEvent
-from ..engine.settings import EngineSettings
+from .settings import EngineSettings
 from ..strategies.indicators import from_klines
 from ..strategies.signals import run_all, Signal
 from .types import AggregatedSignal

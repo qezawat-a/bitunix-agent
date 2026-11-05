@@ -33,8 +33,8 @@ log = logging.getLogger(__name__)
 
 MEMORY_FILE = STATE_DIR / "memory.json"
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-SOULS_DIR = PROJECT_ROOT / "jrrock" / "soul"
-SKILLS_DIR = PROJECT_ROOT / "jrrock" / "skills"
+SOULS_DIR = PROJECT_ROOT / "jrock" / "soul"
+SKILLS_DIR = PROJECT_ROOT / "jrock" / "skills"
 
 BASE_SOUL = """You are J+ROCK, an elite AI trading agent with a battle-hardened soul.
 
@@ -225,7 +225,7 @@ class AgentRuntime:
             return f"[Think error: {e}]"
 
     async def code_review(self, target: str) -> str:
-        proj = PROJECT_ROOT / "jrrock"
+        proj = PROJECT_ROOT / "jrock"
         files = []
         if target == "all" or not target:
             for d in ("engine", "adapters", "strategies", "risk", "agent", "commands"):
@@ -269,7 +269,7 @@ class AgentRuntime:
 
     async def verify(self, target: str) -> str:
         results = []
-        proj = PROJECT_ROOT / "jrrock"
+        proj = PROJECT_ROOT / "jrock"
         dirs = [target] if target != "all" else ["engine", "adapters", "strategies", "risk", "agent", "commands"]
         for d in dirs:
             path = proj / d
@@ -293,7 +293,7 @@ class AgentRuntime:
     async def simplify(self, target: str) -> str:
         f = Path(target)
         if not f.exists():
-            f = PROJECT_ROOT / "jrrock" / target
+            f = PROJECT_ROOT / "jrock" / target
         if not f.exists():
             return f"File not found: {target}"
         content = f.read_text(encoding="utf-8")

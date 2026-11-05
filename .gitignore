@@ -10,6 +10,6 @@ dist/
 build/
 .venv/
 venv/
-jrrock/docs_raw/
+jrock/docs_raw/
 *.log
-jrrock/state/
+jrock/state/

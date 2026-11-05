@@ -29,11 +29,11 @@ from pathlib import Path
 from typing import Optional, Callable, Awaitable
 
 from ..adapters.bitunix import BitunixClient, BitunixError
-from ..engine.settings import EngineSettings, STATE_DIR
-from ..engine.tpsl import TPSLPlan, compute_tpsl
+from .settings import EngineSettings, STATE_DIR
+from .tpsl import TPSLPlan, compute_tpsl
 from ..risk.liquidation import parse_tiers
 from ..risk.sizing import size_position, check_pretrade, RiskLimits, SymbolLimits
-from ..strategies.signals import AggregatedSignal
+from .types import AggregatedSignal
 
 log = logging.getLogger(__name__)
 

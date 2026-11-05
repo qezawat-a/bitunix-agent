@@ -16,7 +16,7 @@ A full-stack autonomous trading agent and Bitunix futures engine, controlled via
 ## Quick Start
 
 ```bash
-cd jrrock
+cd jrock
 cp .env.example .env
 # Fill in BITUNIX_API_KEY, BITUNIX_SECRET_KEY, TELEGRAM_BOT_TOKEN, LLM_API_KEY
 
@@ -28,7 +28,7 @@ uv pip install --python .venv/bin/python -r requirements.txt
 ## Project Structure
 
 ```
-jrrock/
+jrock/
   adapters/    Bitunix REST client (battle-tested, corrected against live API)
   engine/      Scanner, executor, TPSL calculator, settings, main engine loop
   strategies/  16 strategy signals + all technical indicators (pure numpy)
@@ -57,14 +57,14 @@ jrrock/
 ## Tests
 
 ```bash
-cd jrrock && ../.venv/bin/python -m pytest tests/ -v
+cd jrock && ../.venv/bin/python -m pytest tests/ -v
 ```
 
 22/22 tests pass.
 
 ## Exchange Docs
 
-All Bitunix API docs extracted to `jrrock/docs/` — 40+ endpoints covering market data, account, positions, orders, TP/SL, and WebSocket channels.
+All Bitunix API docs extracted to `jrock/docs/` — 40+ endpoints covering market data, account, positions, orders, TP/SL, and WebSocket channels.
 
 ---
 Built with Python 3.14 · Bitunix Futures API · Telegram Bot API

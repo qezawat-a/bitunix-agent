@@ -37,22 +37,22 @@ logging.basicConfig(
         ),
     ],
 )
-log = logging.getLogger("jrrock")
+log = logging.getLogger("jrock")
 
 
 def build_engine():
-    from adapters.bitunix import BitunixClient
-    from engine.settings import EngineSettings
-    from engine.engine import Engine
+    from jrock.adapters.bitunix import BitunixClient
+    from jrock.engine.settings import EngineSettings
+    from jrock.engine.engine import Engine
     client = BitunixClient()
     settings = EngineSettings.load()
     return client, settings, Engine(client, settings)
 
 
 def build_agent(engine):
-    from agent.llm import LLMConfig
-    from agent.runtime import AgentRuntime
-    from commands.handlers import build_registry
+    from jrock.agent.llm import LLMConfig
+    from jrock.agent.runtime import AgentRuntime
+    from jrock.commands.handlers import build_registry
     config = LLMConfig.from_env()
     registry = build_registry()
     return AgentRuntime(engine, registry, config)
@@ -142,8 +142,8 @@ async def amain():
 
 
 def main():
-    # Ensure relative imports work by running from the jrrock dir.
-    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    # Ensure the package root is on sys.path so `import jrock.*` resolves.
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
     try:
         asyncio.run(amain())
     except KeyboardInterrupt:
