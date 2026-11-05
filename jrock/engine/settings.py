@@ -56,6 +56,7 @@ class EngineSettings:
     # Safety
     max_daily_loss_pct: float = 5.0
     max_notional_total: float = 0.0         # 0 = unlimited
+    cross_margin_risk_ceiling_pct: float = 25.0  # hard cap: CROSS margin risk % of equity
 
     def save(self) -> None:
         STATE_DIR.mkdir(parents=True, exist_ok=True)

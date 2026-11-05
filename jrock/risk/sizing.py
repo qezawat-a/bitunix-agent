@@ -179,6 +179,8 @@ class RiskLimits:
     max_daily_loss_pct: float = 5.0
     max_single_loss_pct: float = 2.0
     min_margin_buffer_pct: float = 10.0
+    margin_mode: str = "ISOLATED"   # ISOLATED | CROSS
+    cross_margin_risk_ceiling_pct: float = 25.0  # hard cap: margin risk % of equity under CROSS
     allow_new_positions: bool = True
     block_reason: str = ""
 
@@ -217,5 +219,15 @@ def check_pretrade(
     if limits.max_notional_total > 0:
         if proposed_notional > limits.max_notional_total:
             return False, f"notional {proposed_notional:.2f} > limit {limits.max_notional_total:.2f}"
+
+    # CROSS margin mode: hard safety ceiling — total committed margin risk
+    # may not exceed cross_margin_risk_ceiling_pct of equity.
+    if equity > 0 and limits.margin_mode.upper() == "CROSS":
+        margin_risk_pct = (proposed_margin / equity) * 100
+        if margin_risk_pct > limits.cross_margin_risk_ceiling_pct:
+            return False, (
+                f"CROSS margin risk {margin_risk_pct:.1f}% of equity exceeds "
+                f"ceiling {limits.cross_margin_risk_ceiling_pct:.1f}%"
+            )
 
     return True, ""

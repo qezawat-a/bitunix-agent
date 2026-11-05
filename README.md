@@ -63,7 +63,7 @@ jrock/           The `jrock` package (import as `jrock.<module>`)
 `/code_review` `/bug_fix` `/verify` `/simplify` `/check_ai` `/check_system` `/autopsy` `/diagnose` `/team_spawn` `/git_push`
 
 ### Engine
-`/engine on|off` `/scan on|off|now` `/autotrade on|off` `/status` `/pnl` `/positions` `/close` `/trades` `/tpsl_history` `/settings` `/leverage` `/symbols` `/margin` `/max_positions` `/reversal` `/mid_management` `/report`
+`/engine on|off` `/scan on|off|now` `/autotrade on|off` `/status` `/pnl` `/positions` `/close` `/trades` `/tpsl_history` `/settings` `/settings trade` `/leverage` `/symbols` `/margin` `/max_positions` `/reversal` `/mid_management` `/report`
 
 ## Tests
 

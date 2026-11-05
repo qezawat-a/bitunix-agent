@@ -90,6 +90,8 @@ class Executor:
             max_open_positions=settings.max_open_positions,
             max_daily_loss_pct=settings.max_daily_loss_pct,
             max_notional_total=settings.max_notional_total,
+            margin_mode=settings.margin_mode,
+            cross_margin_risk_ceiling_pct=settings.cross_margin_risk_ceiling_pct,
         )
         # Symbol limits cache (populated from exchange on first use).
         self._limits: dict[str, SymbolLimits] = {}

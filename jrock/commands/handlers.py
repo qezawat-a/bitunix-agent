@@ -614,15 +614,20 @@ async def cmd_settings(
     engine: "Engine",
     **_,
 ) -> CommandResult:
-    """Show or update engine settings."""
-    if not args:
-        return _ok(engine._settings.summary())
-    # Parse key=value pairs from args.
+    """Show or update engine settings. Use /settings trade for the full snapshot."""
+    # Handle /settings trade subcommand (registry only sees first token as cmd name).
+    positional = []
     kwargs = {}
     for a in args:
         if "=" in a:
             k, _, v = a.partition("=")
             kwargs[k.strip()] = v.strip()
+        else:
+            positional.append(a.strip())
+    if positional and positional[0].lower() == "trade":
+        return await cmd_settings_trade(engine=engine)
+    if not args:
+        return _ok(engine._settings.summary())
     if not kwargs:
         return _err("Usage: /settings [key=value ...]")
     changed = await engine.update_settings(**kwargs)
@@ -716,6 +721,127 @@ async def cmd_max_positions(
     return _ok(f"Max open positions set to {new_val} (was {before}).")
 
 
+async def cmd_settings_trade(*, engine: "Engine", **_) -> CommandResult:
+    """Real-time trading configuration snapshot (SECTION 4: Settings trade).
+
+    Outputs: leverage, symbols, active PnL, price data, scanner parameters,
+    and current active TPSL zones.
+    """
+    s = engine._settings
+    try:
+        account = await engine._client.get_account()
+        equity = float(
+            account.get("equity") or account.get("totalEquity") or
+            account.get("available") or account.get("balance") or 0
+        )
+        available = float(account.get("available") or account.get("availableMargin") or equity)
+        cross_upnl = float(account.get("crossUnrealizedPNL") or 0)
+        iso_upnl = float(account.get("isolationUnrealizedPNL") or 0)
+    except Exception as e:
+        equity = available = cross_upnl = iso_upnl = 0.0
+
+    try:
+        positions = await engine._client.get_pending_positions()
+        pos_pnl = sum(float(p.get("unrealizedPnl") or p.get("pnl") or 0) for p in positions)
+    except Exception:
+        positions = []
+        pos_pnl = 0.0
+
+    # Last known prices from the WS scanner (primary price feed).
+    prices: dict[str, float] = {}
+    try:
+        prices = dict(engine._ws_scanner.prices)
+    except Exception:
+        prices = {}
+
+    # Active TPSL zones from the last executed trades / TPSL history.
+    tpsl_zones: list[dict] = []
+    try:
+        tpsl_hist = await engine._client.get_history_tpsl_orders(limit=10)
+        items = tpsl_hist if isinstance(tpsl_hist, list) else tpsl_hist.get("orderList", [])
+        for t in items[:5]:
+            tpsl_zones.append({
+                "symbol": t.get("symbol", "?"),
+                "tp": t.get("tpPrice", "—"),
+                "sl": t.get("slPrice", "—"),
+                "status": t.get("status", "?"),
+            })
+    except Exception:
+        tpsl_zones = []
+
+    scanner = {
+        "scan_enabled": s.scan_enabled,
+        "scan_interval_sec": s.scan_interval_sec,
+        "timeframes": s.timeframes,
+        "min_confidence": s.min_confidence,
+        "tf_min_confidence": s.tf_min_confidence,
+        "min_agreeing_strategies": s.min_agreeing_strategies,
+    }
+
+    tpsl_cfg = {
+        "breakeven_threshold_pct": s.breakeven_threshold_pct,
+        "trailing_stop_roi_pct": s.trailing_stop_roi_pct,
+        "liq_sl_distance_pct": s.liq_sl_distance_pct,
+        "sl_stop_type": s.sl_stop_type,
+    }
+
+    lines = ["**⚙️ Settings Trade — Real-Time Config**"]
+    lines.append(f"  Leverage: {s.leverage}x")
+    lines.append(f"  Margin Mode: {s.margin_mode}  |  Position Mode: {s.position_mode}")
+    lines.append(f"  Symbols: {', '.join(s.symbols)}")
+    lines.append(f"  Max Open Positions: {s.max_open_positions}")
+    lines.append(f"  Risk Per Trade: {s.risk_per_trade_pct}%")
+    lines.append("")
+    lines.append("**💰 Active PnL**")
+    lines.append(f"  Equity: {equity:.2f}  |  Available: {available:.2f}")
+    lines.append(f"  Unrealized PnL (positions): {pos_pnl:.2f}")
+    lines.append(f"  Cross UPNL: {cross_upnl:.2f}  |  Isolation UPNL: {iso_upnl:.2f}")
+    lines.append("")
+    lines.append("**📈 Price Data (last from WS feed)**")
+    if prices:
+        for sym, px in prices.items():
+            lines.append(f"  {sym}: {px:.4f}")
+    else:
+        lines.append("  (no live price feed yet — start scanner)")
+    lines.append("")
+    lines.append("**🔍 Scanner Parameters**")
+    for k, v in scanner.items():
+        lines.append(f"  {k}: {v}")
+    lines.append("")
+    lines.append("**🛡️ Active TPSL Zones**")
+    if tpsl_zones:
+        for z in tpsl_zones:
+            lines.append(f"  {z['symbol']}  TP={z['tp']}  SL={z['sl']}  [{z['status']}]")
+    else:
+        lines.append("  (no TPSL history yet)")
+    lines.append("")
+    lines.append("**⚙️ TPSL Configuration**")
+    for k, v in tpsl_cfg.items():
+        lines.append(f"  {k}: {v}")
+    lines.append("")
+    lines.append(f"  Autotrade: {'ON' if s.autotrade_enabled else 'OFF'}")
+    lines.append(f"  Reversal: {'ON' if s.reversal_enabled else 'OFF'} (conf {s.reversal_confidence})")
+
+    return _ok("\n".join(lines), data={
+        "leverage": s.leverage,
+        "margin_mode": s.margin_mode,
+        "position_mode": s.position_mode,
+        "symbols": s.symbols,
+        "max_open_positions": s.max_open_positions,
+        "risk_per_trade_pct": s.risk_per_trade_pct,
+        "equity": equity,
+        "available": available,
+        "unrealized_pnl": pos_pnl,
+        "prices": prices,
+        "scanner": scanner,
+        "tpsl_zones": tpsl_zones,
+        "tpsl_config": tpsl_cfg,
+        "autotrade_enabled": s.autotrade_enabled,
+        "reversal_enabled": s.reversal_enabled,
+        "reversal_confidence": s.reversal_confidence,
+    })
+
+
 async def cmd_reversal(
     value: str = "",
     confidence: str = "",
@@ -799,6 +925,7 @@ def build_registry() -> CommandRegistry:
         CommandDef("positions", cmd_positions, "Open positions", aliases=["pos", "positions_history"], category="engine"),
         CommandDef("close", cmd_close, "Close a position", args_schema="<symbol> [position_id=...]", category="engine"),
         CommandDef("settings", cmd_settings, "Show/update settings", args_schema="[key=value ...]", category="engine"),
+        CommandDef("settings trade", cmd_settings_trade, "Real-time trading config snapshot (leverage, symbols, PnL, price, scanner, TPSL zones)", category="engine", aliases=["settings_trade", "trade_settings"]),
         CommandDef("leverage", cmd_leverage, "Get/set leverage", args_schema="[value] [symbol=...]", category="engine"),
         CommandDef("symbols", cmd_symbols, "Get/set active symbols", args_schema="[SYM1 SYM2 ...]", category="engine"),
         CommandDef("margin", cmd_margin, "Get/set margin mode", args_schema="[ISOLATION|ISOLATED|CROSS] [symbol=...]", category="engine"),

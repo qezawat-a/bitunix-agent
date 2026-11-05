@@ -112,6 +112,18 @@ class Scanner:
 
         price = float(ind.get("close", [0])[-1]) if ind.get("close") is not None else 0.0
         sigs = run_all(ind, price=price, min_confidence=s.tf_min_confidence)
+        # Reversal strategies must clear the higher reversal_confidence floor.
+        reversal_strats = {
+            "hammer_oversold_bounce", "morning_star_divergence",
+            "shooting_star_overbought", "dark_cloud_cover_death",
+            "vwap_breakdown_alert",
+        }
+        if s.reversal_enabled:
+            floor = s.reversal_confidence
+            sigs = [
+                x for x in sigs
+                if (x.strategy not in reversal_strats) or x.confidence >= floor
+            ]
         for sig in sigs:
             sig.symbol = symbol
             sig.timeframe = tf
