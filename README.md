@@ -9,7 +9,8 @@ A full-stack autonomous trading agent and Bitunix futures engine, controlled via
 - **Multi-timeframe scanner**: 1m/3m/5m/15m, requiring N agreeing strategies before a trade
 - **Full command surface**: `/engine`, `/scan`, `/autotrade`, `/status`, `/pnl`, `/positions`, `/close`, `/settings`, and 30+ more
 - **Self-editing agent**: reads/writes its own source with confirmation gate; `/code_review`, `/bug_fix`, `/diagnose`
-- **AutoSetModelByKey**: auto-discovers working LLM models for your API key/endpoint
+- **AutoSetModelByKey**: auto-discovers working LLM models for your API key/endpoint (scans `.env` `BASE_URL`/`API_KEY` on boot)
+- **Git push automation**: `/git_push` force-pushes verified code assets to GitHub via `GITHUB_PAT` + `GITHUB_REPO`
 - **Soul & skills system**: swappable agent personas (`/soul`), injectable skills (`/skill`)
 - **Telegram bot**: python-telegram-bot (async, long polling), streaming replies, inline Approve/Reject buttons for live orders and self-edits
 
@@ -49,7 +50,7 @@ jrock/           The `jrock` package (import as `jrock.<module>`)
   soul/        Agent persona files (jrock_default, aggressive_trader)
   skills/      Injectable skill files (risk_audit, signal_explain)
   state/       Persistent JSON settings, trade journal, memory
-  tests/       49 unit tests (liquidation, sizing, indicators, strategies, engine, telegram bot)
+  tests/       54 unit tests (liquidation, sizing, indicators, strategies, engine, telegram bot, ground-truth API compliance)
   main.py      Entrypoint: Telegram bot / CLI / scan / verify
 ```
 
@@ -59,7 +60,7 @@ jrock/           The `jrock` package (import as `jrock.<module>`)
 `/help` `/models` `/set_model` `/connect_provider` `/think` `/memory` `/soul` `/skill` `/add_soul` `/add_skill` `/add_mcp` `/mcp`
 
 ### Self-heal
-`/code_review` `/bug_fix` `/verify` `/simplify` `/check_ai` `/check_system` `/autopsy` `/diagnose` `/team_spawn`
+`/code_review` `/bug_fix` `/verify` `/simplify` `/check_ai` `/check_system` `/autopsy` `/diagnose` `/team_spawn` `/git_push`
 
 ### Engine
 `/engine on|off` `/scan on|off|now` `/autotrade on|off` `/status` `/pnl` `/positions` `/close` `/trades` `/tpsl_history` `/settings` `/leverage` `/symbols` `/margin` `/reversal` `/mid_management` `/report`
@@ -70,7 +71,7 @@ jrock/           The `jrock` package (import as `jrock.<module>`)
 .venv/bin/python -m pytest jrock/tests -v
 ```
 
-49/49 tests pass.
+54/54 tests pass.
 
 ## Exchange Docs
 
