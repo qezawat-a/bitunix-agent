@@ -49,30 +49,32 @@ def build_engine():
     return client, settings, Engine(client, settings)
 
 
-def build_agent(engine):
+async def build_agent(engine):
     from jrock.agent.llm import LLMConfig
     from jrock.agent.runtime import AgentRuntime
     from jrock.commands.handlers import build_registry
     config = LLMConfig.from_env()
-    # Auto-discover models if model_id is not set but credentials are available.
-    if not config.model_id and config.base_url and config.api_key:
+    registry = build_registry()
+    agent = AgentRuntime(engine, registry, config)
+    # Auto-discover models if no model is set but credentials are available.
+    if not agent.llm_config.model_id and agent.llm_config.base_url and agent.llm_config.api_key:
         try:
-            import asyncio
             from jrock.agent.autoset import discover_models
-            models = asyncio.run(discover_models(config.base_url, config.api_key))
-            working = [m for m in models if m.working]
+            discovered = await discover_models(agent.llm_config.base_url, agent.llm_config.api_key)
+            working = [m for m in discovered if m.working]
             if working:
-                config.model_id = working[0].id
+                agent.llm_config.model_id = working[0].id
+                agent.discovered_models = discovered
+                await engine.update_settings(model_id=working[0].id, base_url=agent.llm_config.base_url)
                 import logging
                 logging.getLogger("jrock").info(
                     "AutoSetModelByKey: selected %s (%d working models)",
-                    config.model_id, len(working),
+                    working[0].id, len(working),
                 )
         except Exception as e:
             import logging
             logging.getLogger("jrock").warning("Auto model discovery failed: %s", e)
-    registry = build_registry()
-    return AgentRuntime(engine, registry, config)
+    return agent
 
 
 async def run_telegram(agent):
@@ -130,7 +132,7 @@ async def amain():
     args = parser.parse_args()
 
     client, settings, engine = build_engine()
-    agent = build_agent(engine)
+    agent = await build_agent(engine)
 
     if args.verify:
         result = await agent.verify("all")
