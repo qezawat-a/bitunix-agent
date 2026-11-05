@@ -95,6 +95,26 @@ class AgentRuntime:
         self.engine = engine
         self.registry = registry
         self.llm_config = llm_config or LLMConfig.from_env()
+        # Auto-discover models if no model is set but credentials are available.
+        if not self.llm_config.model_id and self.llm_config.base_url and self.llm_config.api_key:
+            try:
+                import asyncio
+                try:
+                    discovered = asyncio.run(
+                        discover_models(self.llm_config.base_url, self.llm_config.api_key)
+                    )
+                except RuntimeError:
+                    loop = asyncio.get_event_loop()
+                    discovered = loop.run_until_complete(
+                        discover_models(self.llm_config.base_url, self.llm_config.api_key)
+                    )
+                working = [m for m in discovered if m.working]
+                if working:
+                    self.llm_config.model_id = working[0].id
+                    self.discovered_models = discovered
+                    log.info("AutoSetModelByKey: selected %s (%d working)", working[0].id, len(working))
+            except Exception as e:
+                log.warning("Auto model discovery failed: %s", e)
         self._llm = LLMClient(self.llm_config)
         self._confirm = confirm_fn
         self._history: list[dict] = []

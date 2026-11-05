@@ -148,6 +148,7 @@ async def cmd_connect_provider(
     base_url: str = "",
     api_key: str = "",
     *,
+    engine: "Engine",
     agent: "AgentRuntime",
     **_,
 ) -> CommandResult:
@@ -156,6 +157,21 @@ async def cmd_connect_provider(
     agent.llm_config.base_url = base_url
     agent.llm_config.api_key = api_key
     agent.llm_config.provider = provider or "openai"
+    # Auto-discover models for the new provider.
+    try:
+        from jrock.agent.autoset import discover_models
+        discovered = await discover_models(base_url, api_key)
+        agent.discovered_models = discovered
+        working = [m for m in discovered if m.working]
+        if working:
+            agent.llm_config.model_id = working[0].id
+            await engine.update_settings(model_id=working[0].id, base_url=base_url)
+            return _ok(
+                f"Provider `{provider or 'openai'}` configured at `{base_url}`. "
+                f"Auto-discovered {len(working)} working models. Active: `{working[0].id}`"
+            )
+    except Exception as e:
+        pass
     return _ok(f"Provider `{provider or 'openai'}` configured at `{base_url}`")
 
 

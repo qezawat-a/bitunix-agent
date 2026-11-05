@@ -54,6 +54,23 @@ def build_agent(engine):
     from jrock.agent.runtime import AgentRuntime
     from jrock.commands.handlers import build_registry
     config = LLMConfig.from_env()
+    # Auto-discover models if model_id is not set but credentials are available.
+    if not config.model_id and config.base_url and config.api_key:
+        try:
+            import asyncio
+            from jrock.agent.autoset import discover_models
+            models = asyncio.run(discover_models(config.base_url, config.api_key))
+            working = [m for m in models if m.working]
+            if working:
+                config.model_id = working[0].id
+                import logging
+                logging.getLogger("jrock").info(
+                    "AutoSetModelByKey: selected %s (%d working models)",
+                    config.model_id, len(working),
+                )
+        except Exception as e:
+            import logging
+            logging.getLogger("jrock").warning("Auto model discovery failed: %s", e)
     registry = build_registry()
     return AgentRuntime(engine, registry, config)
 
