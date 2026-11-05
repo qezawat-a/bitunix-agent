@@ -46,10 +46,10 @@ class TPSLPlan:
     reason: str = ""
 
     def stop_type(self) -> str:
-        return "MARK"  # Always use mark price for SL
+        return "LAST_PRICE"  # TPSL trigger fires off last price per spec
 
     def tp_stop_type(self) -> str:
-        return "MARK"
+        return "LAST_PRICE"
 
     def __repr__(self) -> str:
         if not self.valid:
