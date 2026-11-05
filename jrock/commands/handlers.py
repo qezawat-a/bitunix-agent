@@ -626,6 +626,7 @@ async def cmd_settings(
     if not kwargs:
         return _err("Usage: /settings [key=value ...]")
     changed = await engine.update_settings(**kwargs)
+    # Honest verification: only keys that actually differ are reported as changed.
     if not changed:
         return _ok("No settings changed (values were already set).")
     return _ok(f"Updated: {', '.join(changed)}")
@@ -640,13 +641,16 @@ async def cmd_leverage(
 ) -> CommandResult:
     if not value:
         return _ok(f"Current leverage: {engine._settings.leverage}x")
-    await engine.update_settings(leverage=value)
+    before = engine._settings.leverage
+    changed = await engine.update_settings(leverage=value)
+    if "leverage" not in changed:
+        return _ok(f"Leverage already {engine._settings.leverage}x (no change).")
     if symbol:
         try:
             await engine._client.change_leverage(symbol, int(value))
         except Exception as e:
-            return _ok(f"Settings updated but live set failed: {e}")
-    return _ok(f"Leverage set to {value}x")
+            return _ok(f"Settings updated ({before}x → {value}x) but live set failed: {e}")
+    return _ok(f"Leverage set to {value}x (was {before}x).")
 
 
 async def cmd_symbols(
@@ -656,8 +660,11 @@ async def cmd_symbols(
 ) -> CommandResult:
     if not syms:
         return _ok(f"Active symbols: {', '.join(engine._settings.symbols)}")
-    await engine.update_settings(symbols=",".join(syms))
-    return _ok(f"Symbols set to: {', '.join(syms)}")
+    before = list(engine._settings.symbols)
+    changed = await engine.update_settings(symbols=",".join(syms))
+    if "symbols" not in changed:
+        return _ok(f"Symbols already: {', '.join(engine._settings.symbols)} (no change).")
+    return _ok(f"Symbols set to: {', '.join(engine._settings.symbols)} (was {', '.join(before)}).")
 
 
 async def cmd_margin(
@@ -670,15 +677,43 @@ async def cmd_margin(
     if not mode:
         return _ok(f"Current margin mode: {engine._settings.margin_mode}")
     mode = mode.upper()
-    if mode not in ("ISOLATED", "CROSS"):
-        return _err("Mode must be ISOLATED or CROSS")
-    await engine.update_settings(margin_mode=mode)
+    # Spec uses ISOLATION/CROSS; settings stores ISOLATED/CROSS — accept both.
+    alias = {"ISOLATION": "ISOLATED", "ISOLATED": "ISOLATED", "CROSS": "CROSS"}
+    if mode not in alias:
+        return _err("Mode must be ISOLATION/ISOLATED or CROSS")
+    normalized = alias[mode]
+    before = engine._settings.margin_mode
+    changed = await engine.update_settings(margin_mode=normalized)
+    if "margin_mode" not in changed:
+        return _ok(f"Margin mode already {normalized} (no change).")
     if symbol:
         try:
-            await engine._client.change_margin_mode(symbol, mode)
+            await engine._client.change_margin_mode(symbol, normalized)
         except Exception as e:
-            return _ok(f"Settings updated but live set failed: {e}")
-    return _ok(f"Margin mode set to {mode}")
+            return _ok(f"Settings updated ({before} → {normalized}) but live set failed: {e}")
+    return _ok(f"Margin mode set to {normalized} (was {before}).")
+
+
+async def cmd_max_positions(
+    value: str = "",
+    *,
+    engine: "Engine",
+    **_,
+) -> CommandResult:
+    """Get or set max open positions (concurrent position cap)."""
+    if not value:
+        return _ok(f"Max open positions: {engine._settings.max_open_positions}")
+    try:
+        new_val = int(value)
+    except ValueError:
+        return _err("Usage: /max_positions <number>")
+    before = engine._settings.max_open_positions
+    changed = await engine.update_settings(max_open_positions=new_val)
+    if "max_open_positions" not in changed:
+        return _ok(f"Max open positions already {new_val} (no change).")
+    # Also keep executor risk limit in sync live.
+    engine._executor._risk.max_open_positions = new_val
+    return _ok(f"Max open positions set to {new_val} (was {before}).")
 
 
 async def cmd_reversal(
@@ -766,7 +801,8 @@ def build_registry() -> CommandRegistry:
         CommandDef("settings", cmd_settings, "Show/update settings", args_schema="[key=value ...]", category="engine"),
         CommandDef("leverage", cmd_leverage, "Get/set leverage", args_schema="[value] [symbol=...]", category="engine"),
         CommandDef("symbols", cmd_symbols, "Get/set active symbols", args_schema="[SYM1 SYM2 ...]", category="engine"),
-        CommandDef("margin", cmd_margin, "Get/set margin mode", args_schema="[ISOLATED|CROSS] [symbol=...]", category="engine"),
+        CommandDef("margin", cmd_margin, "Get/set margin mode", args_schema="[ISOLATION|ISOLATED|CROSS] [symbol=...]", category="engine"),
+        CommandDef("max_positions", cmd_max_positions, "Get/set max open positions cap", args_schema="<number>", category="engine"),
         CommandDef("reversal", cmd_reversal, "Reversal settings", args_schema="[true|false] [confidence=N]", category="engine"),
         CommandDef("mid_management", cmd_mid_management, "Trigger mid-position management", args_schema="[symbol]", category="engine"),
     ]
