@@ -4,7 +4,7 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass, field
 
-from ..strategies.signals import Signal
+from jrock.strategies.signals import Signal
 
 
 @dataclass

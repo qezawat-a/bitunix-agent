@@ -29,9 +29,12 @@ import logging
 import os
 import time
 from collections import defaultdict
-from typing import Optional
+from typing import Any, Optional, TYPE_CHECKING
 
 import httpx
+
+if TYPE_CHECKING:
+    from jrock.agent.runtime import AgentRuntime
 
 log = logging.getLogger(__name__)
 
@@ -85,7 +88,7 @@ class SlackBot:
         self._allowed = allowed_users or self._load_allowed()
         self._rl = RateLimiter()
         self._pending: dict[str, PendingConfirmation] = {}
-        self._agent = None
+        self._agent: Optional[AgentRuntime] = None
         self._running = False
         self._http = httpx.AsyncClient(timeout=30.0)
         self._headers = {"Authorization": f"Bearer {bot_token}"}
@@ -99,7 +102,7 @@ class SlackBot:
     # Slack Web API helpers                                               #
     # ------------------------------------------------------------------ #
 
-    async def _api(self, method: str, *, files: Optional[dict] = None, **kwargs) -> dict:
+    async def _api(self, method: str, *, files: Optional[dict] = None, **kwargs: Any) -> dict:
         if files:
             data = {"method": method}
             for k, v in kwargs.items():
@@ -128,7 +131,7 @@ class SlackBot:
         blocks: Optional[list] = None,
         thread_ts: Optional[str] = None,
     ) -> Optional[str]:
-        kwargs = {
+        kwargs: dict[str, Any] = {
             "channel": channel,
             "text": text[:MAX_MSG_LEN],
         }
@@ -145,7 +148,7 @@ class SlackBot:
     async def _update_message(
         self, channel: str, ts: str, text: str, blocks: Optional[list] = None
     ) -> None:
-        kwargs = {"channel": channel, "ts": ts, "text": text[:MAX_MSG_LEN]}
+        kwargs: dict[str, Any] = {"channel": channel, "ts": ts, "text": text[:MAX_MSG_LEN]}
         if blocks:
             kwargs["blocks"] = blocks
         await self._api("chat.update", **kwargs)
@@ -259,7 +262,9 @@ class SlackBot:
                 if self._running:
                     await asyncio.sleep(5)
 
-    async def _handle_socket_message(self, raw: str) -> None:
+    async def _handle_socket_message(self, raw: str | bytes) -> None:
+        if isinstance(raw, bytes):
+            raw = raw.decode("utf-8", "ignore")
         try:
             msg = json.loads(raw)
         except json.JSONDecodeError:
@@ -325,8 +330,13 @@ class SlackBot:
         ts = await self._post_message(channel, "⏳ Thinking…", thread_ts=thread_ts)
         buffer_parts = []
 
+        agent = self._agent
+        if agent is None:
+            await self._post_message(channel, "⚠️ Agent not ready.", thread_ts=thread_ts)
+            return
+
         try:
-            async for chunk in self._agent.handle(text):
+            async for chunk in agent.handle(text):
                 buffer_parts.append(chunk)
         except Exception as e:
             buffer_parts.append(f"\n[Agent error: {e}]")
@@ -367,8 +377,13 @@ class SlackBot:
         ts = await self._post_message(channel, "⏳ Running…")
         buffer_parts = []
 
+        agent = self._agent
+        if agent is None:
+            await self._post_message(channel, "⚠️ Agent not ready.")
+            return
+
         try:
-            async for chunk in self._agent.handle(full):
+            async for chunk in agent.handle(full):
                 buffer_parts.append(chunk)
         except Exception as e:
             buffer_parts.append(f"\n[Agent error: {e}]")

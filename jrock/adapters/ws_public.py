@@ -254,7 +254,9 @@ class PublicWsClient:
             await asyncio.sleep(delay)
             delay = min(delay * 2, RECONNECT_MAX)
 
-    async def _dispatch(self, raw: str) -> None:
+    async def _dispatch(self, raw: str | bytes) -> None:
+        if isinstance(raw, bytes):
+            raw = raw.decode("utf-8", "ignore")
         try:
             msg = json.loads(raw)
         except json.JSONDecodeError:

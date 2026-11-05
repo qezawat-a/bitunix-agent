@@ -20,9 +20,12 @@ import logging
 import os
 import time
 from collections import defaultdict
-from typing import Optional, AsyncIterator, Callable, Awaitable
+from typing import Optional, AsyncIterator, Callable, Awaitable, TYPE_CHECKING
 
 import httpx
+
+if TYPE_CHECKING:
+    from jrock.agent.runtime import AgentRuntime
 
 log = logging.getLogger(__name__)
 
@@ -78,7 +81,7 @@ class TelegramBot:
         self._allowed = allowed_users or self._load_allowed()
         self._rl = RateLimiter()
         self._pending: dict[str, PendingConfirmation] = {}
-        self._agent: Optional["AgentRuntime"] = None
+        self._agent: Optional[AgentRuntime] = None
         self._offset = 0
         self._running = False
 
@@ -188,8 +191,13 @@ class TelegramBot:
         buffer = ""
         last_edit = time.time()
 
+        agent = self._agent
+        if agent is None:
+            await self._send(chat_id, "⚠️ Agent not ready.")
+            return
+
         try:
-            async for chunk in self._agent.handle(text):
+            async for chunk in agent.handle(text):
                 buffer += chunk
                 # Throttle edits to avoid Telegram flood limits (max ~20 edits/sec).
                 if time.time() - last_edit > 0.8 and placeholder_id:

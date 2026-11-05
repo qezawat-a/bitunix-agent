@@ -19,8 +19,8 @@ from typing import Any, Optional, TYPE_CHECKING
 from .registry import CommandRegistry, CommandDef, CommandResult
 
 if TYPE_CHECKING:
-    from ..engine.engine import Engine
-    from ..agent.runtime import AgentRuntime
+    from jrock.engine.engine import Engine
+    from jrock.agent.runtime import AgentRuntime
 
 
 def _ok(text: str, data: Any = None) -> CommandResult:
@@ -64,7 +64,7 @@ async def cmd_set_model(
 ) -> CommandResult:
     if base_url or api_key:
         # Run AutoSetModelByKey discovery.
-        from ..agent.autoset import discover_models
+        from jrock.agent.autoset import discover_models
         b = base_url or agent.llm_config.base_url
         k = api_key or agent.llm_config.api_key
         import asyncio
@@ -294,7 +294,7 @@ async def cmd_autopsy(
     **_,
 ) -> CommandResult:
     """Analyze the trade journal for patterns and failures."""
-    from ..engine.engine import JOURNAL
+    from jrock.engine.executor import JOURNAL
     if not JOURNAL.exists():
         return _ok("No trade journal found yet.")
     lines = JOURNAL.read_text(encoding="utf-8").splitlines()[-200:]
@@ -312,7 +312,7 @@ async def cmd_diagnose(
 ) -> CommandResult:
     """Diagnose a specific issue in the engine or agent."""
     description = " ".join(args) if args else "recent errors"
-    from ..engine.engine import JOURNAL
+    from jrock.engine.executor import JOURNAL
     recent = ""
     if JOURNAL.exists():
         lines = JOURNAL.read_text(encoding="utf-8").splitlines()[-50:]

@@ -3,20 +3,20 @@ import math
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 import numpy as np
 import pytest
 
-from risk.liquidation import (
+from jrock.risk.liquidation import (
     liquidation_price,
     stop_price_for_liquidation_buffer,
     maintenance_rate,
     DEFAULT_TIERS,
 )
-from risk.sizing import size_position, check_pretrade, SymbolLimits, RiskLimits
-from strategies.indicators import ema, sma, rsi, macd, bollinger, vwap, from_klines, is_hammer, is_shooting_star
-from strategies.signals import run_all, golden_cross_enhanced, death_cross_enhanced
+from jrock.risk.sizing import size_position, check_pretrade, SymbolLimits, RiskLimits
+from jrock.strategies.indicators import ema, sma, rsi, macd, bollinger, vwap, from_klines, is_hammer, is_shooting_star
+from jrock.strategies.signals import run_all, golden_cross_enhanced, death_cross_enhanced
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -198,7 +198,7 @@ def test_golden_cross_fires():
          "baseVol": "100", "quoteVol": "10000"}
         for i in range(n)
     ]
-    from strategies.indicators import from_klines
+    from jrock.strategies.indicators import from_klines
     ind = from_klines(klines)
     sig = golden_cross_enhanced(ind, price=prices[-1])
     # May or may not fire depending on exact cross timing — just check it doesn't crash.
@@ -216,7 +216,7 @@ def test_death_cross_fires():
          "baseVol": "50", "quoteVol": "5000"}
         for i in range(250)
     ]
-    from strategies.indicators import from_klines
+    from jrock.strategies.indicators import from_klines
     ind = from_klines(klines)
     sig = death_cross_enhanced(ind, price=prices[-1])
     if sig:
@@ -232,7 +232,7 @@ def test_run_all_returns_list():
          "baseVol": "100", "quoteVol": "10000"}
         for i in range(n)
     ]
-    from strategies.indicators import from_klines
+    from jrock.strategies.indicators import from_klines
     ind = from_klines(klines)
     sigs = run_all(ind, price=prices[-1], min_confidence=0)
     assert isinstance(sigs, list)

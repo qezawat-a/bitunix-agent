@@ -16,19 +16,29 @@ A full-stack autonomous trading agent and Bitunix futures engine, controlled via
 ## Quick Start
 
 ```bash
-cd jrock
-cp .env.example .env
+# Run from the repository root: `jrock` is a package, so imports resolve as
+# `jrock.*` and the environment is created at the project root (next to
+# pyproject.toml) where ty/uv expect to find it.
+cp jrock/.env.example jrock/.env
 # Fill in BITUNIX_API_KEY, BITUNIX_SECRET_KEY, TELEGRAM_BOT_TOKEN, LLM_API_KEY
 
 uv venv --python 3.14 .venv
 uv pip install --python .venv/bin/python -r requirements.txt
-.venv/bin/python main.py
+uv pip install --python .venv/bin/python -e .
+.venv/bin/python jrock/main.py
+```
+
+## Type checking
+
+```bash
+.venv/bin/python -m ty check        # or: ty check   (works from any subdirectory)
 ```
 
 ## Project Structure
 
 ```
-jrock/
+pyproject.toml  Package metadata + dependencies (`websockets`, `httpx`, …)
+jrock/           The `jrock` package (import as `jrock.<module>`)
   adapters/    Bitunix REST client (battle-tested, corrected against live API)
   engine/      Scanner, executor, TPSL calculator, settings, main engine loop
   strategies/  16 strategy signals + all technical indicators (pure numpy)
@@ -39,7 +49,7 @@ jrock/
   soul/        Agent persona files (jrock_default, aggressive_trader)
   skills/      Injectable skill files (risk_audit, signal_explain)
   state/       Persistent JSON settings, trade journal, memory
-  tests/       22 unit tests (liquidation, sizing, indicators, strategies, safety)
+  tests/       37 unit tests (liquidation, sizing, indicators, strategies, safety)
   main.py      Entrypoint: Telegram bot / CLI / scan / verify
 ```
 
@@ -57,10 +67,10 @@ jrock/
 ## Tests
 
 ```bash
-cd jrock && ../.venv/bin/python -m pytest tests/ -v
+.venv/bin/python -m pytest jrock/tests -v
 ```
 
-22/22 tests pass.
+37/37 tests pass.
 
 ## Exchange Docs
 

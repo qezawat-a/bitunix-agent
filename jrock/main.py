@@ -63,8 +63,12 @@ async def run_telegram(agent):
     if not token:
         log.error("TELEGRAM_BOT_TOKEN not set. Set it in .env and restart.")
         sys.exit(1)
-    from bots.telegram import TelegramBot
-    bot = TelegramBot(token, agent_factory=lambda: asyncio.coroutine(lambda: agent)())
+    from jrock.bots.telegram import TelegramBot
+
+    async def _agent_factory():
+        return agent
+
+    bot = TelegramBot(token, agent_factory=_agent_factory)
     # Inject agent directly since it's already built.
     bot._agent = agent
     bot._agent._confirm = bot._confirmation_gate
@@ -122,7 +126,7 @@ async def amain():
         if not key:
             print("LLM_API_KEY not set.")
             return
-        from agent.autoset import discover_models
+        from jrock.agent.autoset import discover_models
         models = await discover_models(base, key)
         for m in models:
             s = "✅" if m.working else "❌"

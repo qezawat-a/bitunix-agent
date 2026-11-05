@@ -19,9 +19,9 @@ import time
 from dataclasses import dataclass, field
 from typing import Optional
 
-from ..adapters.bitunix import BitunixClient
-from ..strategies.indicators import from_klines
-from ..strategies.signals import run_all, Signal
+from jrock.adapters.bitunix import BitunixClient
+from jrock.strategies.indicators import from_klines
+from jrock.strategies.signals import run_all, Signal
 from .types import AggregatedSignal
 from .settings import EngineSettings
 
@@ -78,7 +78,7 @@ class Scanner:
         # Group by symbol
         by_symbol: dict[str, list[Signal]] = {}
         for r in results:
-            if isinstance(r, Exception) or r is None:
+            if not isinstance(r, list):
                 continue
             for sig in r:
                 by_symbol.setdefault(sig.symbol, []).append(sig)

@@ -8,6 +8,7 @@ from __future__ import annotations
 import math
 import sys
 from pathlib import Path
+from typing import cast
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
@@ -152,7 +153,7 @@ class _FakeSettings:
 
 def test_scanner_aggregates_longs():
     scanner = Scanner.__new__(Scanner)
-    scanner._settings = _FakeSettings()
+    scanner._settings = cast(EngineSettings, _FakeSettings())
     longs = [
         _agg_signal("LONG", "vegas_tunnel_bullish"),
         _agg_signal("LONG", "golden_cross_enhanced"),
@@ -166,7 +167,7 @@ def test_scanner_aggregates_longs():
 
 def test_scanner_rejects_below_min_strategies():
     scanner = Scanner.__new__(Scanner)
-    scanner._settings = _FakeSettings()
+    scanner._settings = cast(EngineSettings, _FakeSettings())
     sigs = [_agg_signal("LONG", "vegas_tunnel_bullish")]  # only 1 strategy
     agg = scanner._aggregate("BTCUSDT", sigs)
     assert agg is None  # min_agreeing_strategies=3
@@ -174,7 +175,7 @@ def test_scanner_rejects_below_min_strategies():
 
 def test_scanner_rejects_below_min_confidence():
     scanner = Scanner.__new__(Scanner)
-    scanner._settings = _FakeSettings()
+    scanner._settings = cast(EngineSettings, _FakeSettings())
     sigs = [
         _agg_signal("LONG", "vegas_tunnel_bullish", 50),
         _agg_signal("LONG", "golden_cross_enhanced", 50),

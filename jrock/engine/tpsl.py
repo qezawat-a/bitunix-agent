@@ -22,7 +22,7 @@ import logging
 from dataclasses import dataclass
 from typing import Optional
 
-from ..risk.liquidation import liquidation_price, stop_price_for_liquidation_buffer
+from jrock.risk.liquidation import liquidation_price, stop_price_for_liquidation_buffer
 from .types import AggregatedSignal
 from .settings import EngineSettings
 

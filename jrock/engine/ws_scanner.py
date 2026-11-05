@@ -17,11 +17,11 @@ import time
 from collections import defaultdict, deque
 from typing import Optional
 
-from ..adapters.ws_public import PublicWsClient, KlineEvent, TickerEvent
-from ..adapters.ws_private import PrivateWsClient, PositionEvent, OrderEvent, TpSlEvent
+from jrock.adapters.ws_public import PublicWsClient, KlineEvent, TickerEvent
+from jrock.adapters.ws_private import PrivateWsClient, PositionEvent, OrderEvent, TpSlEvent
 from .settings import EngineSettings
-from ..strategies.indicators import from_klines
-from ..strategies.signals import run_all, Signal
+from jrock.strategies.indicators import from_klines
+from jrock.strategies.signals import run_all, Signal
 from .types import AggregatedSignal
 
 log = logging.getLogger(__name__)

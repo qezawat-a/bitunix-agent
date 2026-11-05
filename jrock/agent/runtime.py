@@ -21,13 +21,13 @@ import sys
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import AsyncIterator, Optional, Callable, Awaitable
+from typing import AsyncIterator, Optional, Callable, Awaitable, Dict, List
 
 from .autoset import ModelInfo, discover_models
 from .llm import LLMClient, LLMConfig
-from ..commands.registry import CommandRegistry, CommandResult
-from ..engine.engine import Engine
-from ..engine.settings import STATE_DIR
+from jrock.commands.registry import CommandRegistry, CommandResult
+from jrock.engine.engine import Engine
+from jrock.engine.settings import STATE_DIR
 
 log = logging.getLogger(__name__)
 
@@ -62,7 +62,7 @@ class SimpleMemory:
     def get(self, key: str, default: str = "") -> str:
         return self._store.get(key, default)
 
-    def list(self) -> list[dict]:
+    def list(self) -> List[Dict[str, str]]:
         return [{"key": k, "value": v} for k, v in self._store.items()]
 
     def clear(self) -> None:

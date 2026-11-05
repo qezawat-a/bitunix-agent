@@ -17,9 +17,9 @@ import time
 from dataclasses import dataclass, field
 from typing import Optional, Callable, Awaitable
 
-from ..adapters.bitunix import BitunixClient
-from ..adapters.ws_public import PublicWsClient
-from ..adapters.ws_private import PrivateWsClient
+from jrock.adapters.bitunix import BitunixClient
+from jrock.adapters.ws_public import PublicWsClient
+from jrock.adapters.ws_private import PrivateWsClient
 from .scanner import Scanner
 from .ws_scanner import WsScanner
 from .types import AggregatedSignal

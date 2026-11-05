@@ -28,11 +28,11 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Optional, Callable, Awaitable
 
-from ..adapters.bitunix import BitunixClient, BitunixError
+from jrock.adapters.bitunix import BitunixClient, BitunixError
 from .settings import EngineSettings, STATE_DIR
 from .tpsl import TPSLPlan, compute_tpsl
-from ..risk.liquidation import parse_tiers
-from ..risk.sizing import size_position, check_pretrade, RiskLimits, SymbolLimits
+from jrock.risk.liquidation import parse_tiers
+from jrock.risk.sizing import size_position, check_pretrade, RiskLimits, SymbolLimits
 from .types import AggregatedSignal
 
 log = logging.getLogger(__name__)
@@ -142,7 +142,7 @@ class Executor:
         open_pos = await self._client.get_pending_positions(sym)
 
         # Compute preliminary SL distance for sizing.
-        from ..risk.liquidation import liquidation_price, stop_price_for_liquidation_buffer
+        from jrock.risk.liquidation import liquidation_price, stop_price_for_liquidation_buffer
         try:
             est = liquidation_price(entry=entry, qty=1.0, leverage=s.leverage, side=signal.direction, tiers=tiers)
             rough_sl = stop_price_for_liquidation_buffer(est, s.liq_sl_distance_pct)

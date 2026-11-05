@@ -1,0 +1,39 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "jrock"
+version = "1.0.0"
+description = "J+ROCK — AI trading agent and Bitunix futures engine."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "numpy>=1.26.0",
+    "pandas>=2.0.0",
+    "httpx>=0.27.0",
+    "websockets>=12.0",
+    "python-dotenv>=1.0.0",
+    "pyyaml>=6.0.0",
+    "rich>=13.0.0",
+    "textual>=0.60.0",
+    "pydantic>=2.0.0",
+    "aiohttp>=3.9.0",
+    "markdownify>=0.11.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+
+[project.scripts]
+jrock = "jrock.main:main"
+
+[tool.setuptools.packages.find]
+include = ["jrock*"]
+
+[tool.setuptools.package-data]
+jrock = ["docs/*.md", "skills/*.md", "soul/*.md", "requirements.txt", ".env.example"]
+
+[tool.pytest.ini_options]
+testpaths = ["jrock/tests"]
+
