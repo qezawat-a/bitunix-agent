@@ -49,7 +49,7 @@ jrock/           The `jrock` package (import as `jrock.<module>`)
   soul/        Agent persona files (jrock_default, aggressive_trader)
   skills/      Injectable skill files (risk_audit, signal_explain)
   state/       Persistent JSON settings, trade journal, memory
-  tests/       37 unit tests (liquidation, sizing, indicators, strategies, safety)
+  tests/       49 unit tests (liquidation, sizing, indicators, strategies, engine, telegram bot)
   main.py      Entrypoint: Telegram bot / CLI / scan / verify
 ```
 
@@ -70,7 +70,7 @@ jrock/           The `jrock` package (import as `jrock.<module>`)
 .venv/bin/python -m pytest jrock/tests -v
 ```
 
-37/37 tests pass.
+49/49 tests pass.
 
 ## Exchange Docs
 
