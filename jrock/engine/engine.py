@@ -17,7 +17,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Optional, Callable, Awaitable
 
-from jrock.adapters.bitunix import BitunixClient
+from jrock.adapters.bitunix import BitunixClient, BitunixError
 from jrock.adapters.ws_public import PublicWsClient
 from jrock.adapters.ws_private import PrivateWsClient
 from .scanner import Scanner
@@ -78,8 +78,12 @@ class Engine:
         self._status = EngineStatus(symbols=list(settings.symbols))
         self._running = False
         self._report_task: Optional[asyncio.Task] = None
+        self._trailing_task: Optional[asyncio.Task] = None
         self._signal_log: list[dict] = []
         self._trades: list[dict] = []
+        # Track which positions have already been moved to breakeven, so we
+        # don't repeatedly modify the SL on every trailing tick.
+        self._breakeven_done: set[str] = set()
         # Wire signal callbacks
         self._scanner.on_signal(self._on_signal)
         self._ws_scanner.on_signal(self._on_signal)
@@ -102,6 +106,8 @@ class Engine:
             self._status.autotrade = True
         if self._settings.report_enabled:
             self._report_task = asyncio.create_task(self._report_loop(), name="reporter")
+        # Automatic trailing / breakeven monitor for open positions.
+        self._trailing_task = asyncio.create_task(self._trailing_loop(), name="trailing")
         log.info("engine started")
         return "Engine ON. Scanner %s (WebSocket live feed). Autotrade %s." % (
             "ON" if self._settings.scan_enabled else "OFF",
@@ -122,6 +128,13 @@ class Engine:
                 await self._report_task
             except asyncio.CancelledError:
                 pass
+        if self._trailing_task:
+            self._trailing_task.cancel()
+            try:
+                await self._trailing_task
+            except asyncio.CancelledError:
+                pass
+        self._breakeven_done.clear()
         log.info("engine stopped")
         return "Engine OFF."
 
@@ -287,3 +300,102 @@ class Engine:
             except Exception:
                 pass
             await asyncio.sleep(self._settings.report_interval_sec)
+    # ------------------------------------------------------------------ #
+    # Automatic trailing / breakeven monitor                              #
+    # ------------------------------------------------------------------ #
+
+    async def _trailing_loop(self) -> None:
+        """Background monitor: moves SL to breakeven at breakeven_threshold_pct
+        ROI and trails the stop at trailing_stop_roi_pct for open positions.
+
+        Runs once per report interval. Only acts when autotrade is ON so the
+        operator remains in control of live risk adjustments.
+        """
+        while True:
+            try:
+                if not self._settings.autotrade_enabled:
+                    await asyncio.sleep(self._settings.report_interval_sec)
+                    continue
+
+                positions = await self._client.get_pending_positions()
+                if not positions:
+                    await asyncio.sleep(self._settings.report_interval_sec)
+                    continue
+
+                be_threshold = self._settings.breakeven_threshold_pct
+                trail_roi = self._settings.trailing_stop_roi_pct
+
+                for pos in positions:
+                    pid = str(pos.get("positionId", ""))
+                    symbol = pos.get("symbol", "")
+                    side = str(pos.get("side", "")).upper()
+                    entry = float(pos.get("avgOpenPrice") or pos.get("entryPrice") or 0)
+                    pnl_pct = float(pos.get("roe") or pos.get("pnlPct") or 0)
+                    if not pid or not symbol or not entry:
+                        continue
+
+                    is_long = side in ("BUY", "LONG")
+
+                    # (a) Breakeven: once ROI >= threshold, move SL to entry price.
+                    if abs(pnl_pct) >= be_threshold and pid not in self._breakeven_done:
+                        try:
+                            await self._client.modify_position_tpsl_order(
+                                position_id=pid,
+                                symbol=symbol,
+                                sl_price=str(round(entry, 4)),
+                                sl_stop_type="LAST_PRICE",
+                            )
+                            self._breakeven_done.add(pid)
+                            log.info(
+                                "trailing: %s %s pos %s SL -> breakeven %.4f (ROI %.2f%%)",
+                                symbol, side, pid, entry, pnl_pct,
+                            )
+                        except BitunixError as e:
+                            log.warning(
+                                "trailing: breakeven failed for %s pos %s: %s",
+                                symbol, pid, e,
+                            )
+                        continue
+
+                    # (b) Trailing: once ROI >= trail_roi, trail the stop.
+                    if abs(pnl_pct) >= trail_roi:
+                        try:
+                            tickers = await self._client.get_tickers(symbol)
+                            ticker = tickers[0] if isinstance(tickers, list) and tickers else tickers
+                            cur = float(ticker.get("lastPrice") or ticker.get("last") or entry)
+                        except Exception:
+                            cur = entry
+
+                        if is_long:
+                            sl_price = cur * (1 - trail_roi / 100.0)
+                            existing_sl = float(pos.get("stopPrice") or pos.get("slPrice") or 0)
+                            if existing_sl and sl_price <= existing_sl:
+                                continue
+                        else:
+                            sl_price = cur * (1 + trail_roi / 100.0)
+                            existing_sl = float(pos.get("stopPrice") or pos.get("slPrice") or 0)
+                            if existing_sl and sl_price >= existing_sl:
+                                continue
+
+                        try:
+                            await self._client.modify_position_tpsl_order(
+                                position_id=pid,
+                                symbol=symbol,
+                                sl_price=str(round(sl_price, 4)),
+                                sl_stop_type="LAST_PRICE",
+                            )
+                            log.info(
+                                "trailing: %s %s pos %s SL -> %.4f (ROI %.2f%%)",
+                                symbol, side, pid, sl_price, pnl_pct,
+                            )
+                        except BitunixError as e:
+                            log.warning("trailing: trail failed for %s pos %s: %s", symbol, pid, e)
+
+            except Exception as e:
+                log.error("trailing loop error: %s", e)
+
+            await asyncio.sleep(self._settings.report_interval_sec)
+
+    # ------------------------------------------------------------------ #
+    # Internal                                                            #
+    # ------------------------------------------------------------------ #
