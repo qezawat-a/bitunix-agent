@@ -612,21 +612,13 @@ async def cmd_close(
 async def cmd_settings(
     *args,
     engine: "Engine",
-    **_,
+    **kwargs,
 ) -> CommandResult:
     """Show or update engine settings. Use /settings trade for the full snapshot."""
     # Handle /settings trade subcommand (registry only sees first token as cmd name).
-    positional = []
-    kwargs = {}
-    for a in args:
-        if "=" in a:
-            k, _, v = a.partition("=")
-            kwargs[k.strip()] = v.strip()
-        else:
-            positional.append(a.strip())
-    if positional and positional[0].lower() == "trade":
+    if args and args[0].lower() == "trade":
         return await cmd_settings_trade(engine=engine)
-    if not args:
+    if not args and not kwargs:
         return _ok(engine._settings.summary())
     if not kwargs:
         return _err("Usage: /settings [key=value ...]")

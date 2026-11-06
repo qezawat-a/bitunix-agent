@@ -246,7 +246,7 @@ class AgentRuntime:
             result = await self.registry.dispatch(
                 cmd, engine=self.engine, agent=self, registry=self.registry
             )
-            header = f"[auto-executed as `/{cmd}`]\n"
+            header = f"[auto-executed as `{cmd}`]\n"
             if result.ok:
                 yield header + (result.text or "Done.") + note
             else:
