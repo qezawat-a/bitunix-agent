@@ -23,7 +23,7 @@ from collections import defaultdict
 from typing import Awaitable, Callable, Optional, TYPE_CHECKING
 
 import telegram
-from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup, Message, Update
+from telegram import Bot, BotCommand, InlineKeyboardButton, InlineKeyboardMarkup, Message, Update
 from telegram.constants import ParseMode
 from telegram.error import TelegramError
 from telegram.ext import (
@@ -139,6 +139,25 @@ class TelegramBot:
         if updater is None:  # pragma: no cover - polling always has an updater
             await app.shutdown()
             raise RuntimeError("Telegram application has no updater; polling unavailable")
+
+        # Populate the "/" menu (bottom-left) with every registered command
+        # so the user can tap a command instead of typing it.
+        try:
+            registry = getattr(self._agent, "registry", None)
+            bot = self._bot
+            if registry is not None and bot is not None:
+                cmds = registry.all_defs()
+                cmds.sort(key=lambda c: c.name)
+                # Telegram command names: lowercase letters, digits, underscore only.
+                # Names with spaces (e.g. "settings trade") are exposed as "settings_trade".
+                menu = [
+                    BotCommand(c.name.lower().replace(" ", "_"), (c.help_text or c.name)[:255])
+                    for c in cmds
+                ]
+                await bot.set_my_commands(menu)
+                log.info("Telegram command menu populated (%d commands)", len(menu))
+        except Exception as exc:
+            log.warning("set_my_commands failed (menu may be empty): %s", exc)
 
         await updater.start_polling(allowed_updates=Update.ALL_TYPES)
         self._running = True
