@@ -5,6 +5,7 @@ This keeps the same command surface working for CLI, Telegram, and Slack.
 """
 from __future__ import annotations
 
+import difflib
 import shlex
 from dataclasses import dataclass, field
 from typing import Any, Callable, Awaitable, Optional
@@ -49,6 +50,20 @@ class CommandRegistry:
     def get(self, name: str) -> Optional[CommandDef]:
         name = name.lstrip("/").lower()
         canonical = self._aliases.get(name, name)
+        # Fast path for exact match.
+        if canonical in self._cmds:
+            return self._cmds[canonical]
+        # If not found, maybe a typo: rescue via fuzzy matching on names+aliases.
+        normalized = name.replace("_", "").replace("-", "")
+        candidates: dict[str, str] = {}
+        for n in self._cmds:
+            candidates[n.replace("_", "").replace("-", "")] = n
+        for alias in self._aliases.values():
+            candidates[alias.replace("_", "").replace("-", "")] = alias
+        matches = difflib.get_close_matches(normalized, candidates.keys(), n=1, cutoff=0.75)
+        if matches:
+            canonical = candidates[matches[0]]
+            return self._cmds.get(canonical)
         return self._cmds.get(canonical)
 
     def all_defs(self) -> list[CommandDef]:
@@ -80,9 +95,35 @@ class CommandRegistry:
 
         defn = self.get(cmd_name)
         if defn is None:
-            close = [c for c in self._cmds if c.startswith(cmd_name[:3])]
-            suggestion = f"  Did you mean: {', '.join('/' + c for c in close[:3])}?" if close else ""
-            return CommandResult(False, "", error=f"Unknown command /{cmd_name}.{suggestion}")
+            # Fuzzy match: rescue obvious typos (e.g. /codereveiew -> /code_review)
+            # by normalizing separators and using similarity against all names+aliases.
+            normalized = cmd_name.replace("_", "").replace("-", "")
+            candidates: dict[str, str] = {}
+            for name in self._cmds:
+                candidates[name.replace("_", "").replace("-", "")] = name
+                for alias in self._cmds[name].aliases:
+                    candidates[alias.replace("_", "").replace("-", "")] = name
+            match = difflib.get_close_matches(normalized, candidates.keys(), n=1, cutoff=0.75)
+            if match:
+                canonical = candidates[match[0]]
+                # Redirect to the canonical handler instead of returning an error.
+                # Keep positional/kwargs as they were parsed (cmd_name is treated as known).
+                # Move to the canonical name for dispatch.
+                cmd_name = canonical
+                defn = self._cmds[cmd_name]
+            else:
+                close = [c for c in self._cmds if c.startswith(cmd_name[:3])]
+                suggestion = f"  Did you mean: {', '.join('/' + c for c in close[:3])}?" if close else ""
+                return CommandResult(False, "", error=f"Unknown command /{cmd_name}.{suggestion}")
+
+        try:
+            result = await defn.handler(*positional, **kwargs, **ctx)
+        except TypeError as e:
+            return CommandResult(False, "", error=f"/{cmd_name} argument error: {e}")
+        except Exception as e:
+            return CommandResult(False, "", error=f"/{cmd_name} failed: {e}")
+
+        return result
 
         try:
             result = await defn.handler(*positional, **kwargs, **ctx)

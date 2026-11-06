@@ -8,7 +8,7 @@ The runtime:
 5. Maintains conversation history and memory.
 
 Honesty guarantee: the agent never fabricates exchange data. When it doesn't
-know something, it says so. Uncertainty is always explicit.
+know something, say so. Uncertainty is always explicit.
 """
 from __future__ import annotations
 
@@ -45,11 +45,31 @@ CORE PRINCIPLES:
 4. Proactive debugging: Verify before claiming success. If something might be wrong, check it.
 5. Transparency: Explain your reasoning. Don't hide failures or mask errors.
 
+HARD RULE — you are a conversational layer only. You have NO ability to execute
+anything. You cannot change settings, place orders, or call any tools. When the
+user asks you to change a setting, you must reply with the exact slash command
+they should run (e.g. "/settings risk_per_trade_pct=20") and explicitly say the
+change has NOT been applied yet. NEVER claim a setting was changed, applied, or
+saved — that is a lie, because only slash commands executed by the runtime can
+change state. If you mention a value as a recommendation, label it clearly as
+"not applied".
+
 You have full access to a Bitunix futures trading engine. Be direct, precise, and professional.
 When uncertain about market conditions, say "I don't have enough data" rather than guessing.
 """
 
-
+# Natural-language config intents routed to real commands. Deliberately
+# conservative: short single-line requests naming one known setting.
+_CONFIG_INTENT_PATTERNS: list[tuple[tuple[str, ...], str]] = [
+    (("risk per trade", "riesgo por operacion", "riesgo por operación", "riesgo por trade"), "risk_per_trade_pct"),
+    (("leverage", "apalancamiento"), "leverage"),
+    (("max positions", "maxposiciones", "max_open_positions"), "max_open_positions"),
+    (("margin mode", "modo margen", "modo de margen"), "margin_mode"),
+    (("position mode", "modo posicion", "modo de posición"), "position_mode"),
+    (("min confidence", "confianza minima", "confianza mínima"), "min_confidence"),
+    (("scan interval", "intervalo de escaneo"), "scan_interval_sec"),
+    (("daily loss", "perdida diaria", "pérdida diaria"), "max_daily_loss_pct"),
+]
 class SimpleMemory:
     def __init__(self) -> None:
         self._store: dict[str, str] = {}
@@ -82,8 +102,6 @@ class SimpleMemory:
                 self._store = json.loads(MEMORY_FILE.read_text(encoding="utf-8"))
         except Exception:
             self._store = {}
-
-
 class AgentRuntime:
     def __init__(
         self,
@@ -194,10 +212,25 @@ class AgentRuntime:
                 yield f"Error: {result.error}"
             return
 
+        # Natural-language config requests route to real commands so the
+        # change is actually executed instead of hallucinated by the LLM.
+        routed = self._route_config_intent(text)
+        if routed is not None:
+            cmd, note = routed
+            result = await self.registry.dispatch(
+                cmd, engine=self.engine, agent=self, registry=self.registry
+            )
+            header = f"[auto-executed as `/{cmd}`]\n"
+            if result.ok:
+                yield header + (result.text or "Done.") + note
+            else:
+                yield header + f"Error: {result.error}"
+            return
+
         # Conversation goes to the LLM.
         self._history.append({"role": "user", "content": text})
         system = self._build_system_prompt()
-        messages = self._history[-20:]  # Keep last 20 turns.
+        messages = self._history[-20:]
 
         reply_chunks = []
         try:
@@ -211,6 +244,101 @@ class AgentRuntime:
 
         full_reply = "".join(reply_chunks)
         self._history.append({"role": "assistant", "content": full_reply})
+
+        # Honesty guard: if the LLM claims a state change it cannot have made
+        # (it has no execution ability), append a factual correction.
+        correction = self._honesty_correction(full_reply)
+        if correction:
+            self._history.append({"role": "assistant", "content": correction})
+            yield "\n\n" + correction
+
+    # ------------------------------------------------------------------ #
+    # Intent routing & honesty guard                                      #
+    # ------------------------------------------------------------------ #
+
+    def _route_config_intent(self, text: str) -> Optional[tuple[str, str]]:
+        """Match short natural-language config requests to a real command.
+
+        Returns (command, note) or None. Deliberately strict: the request must
+        name exactly one known setting and contain a number or mode token.
+        """
+        if len(text) > 120 or "\n" in text:
+            return None
+        lowered = text.lower().strip().rstrip(".:!")
+        settings = self.engine._settings
+
+        for phrases, key in _CONFIG_INTENT_PATTERNS:
+            if not any(p in lowered for p in phrases):
+                continue
+            # Extract the value: trailing number, or mode word.
+            tokens = lowered.replace(":", " ").split()
+            value: Optional[str] = None
+            for t in reversed(tokens):
+                try:
+                    float(t.rstrip("%x"))
+                    value = t.rstrip("%x")
+                    break
+                except ValueError:
+                    continue
+            if value is None:
+                mode_words = ("cross", "isolated", "cruzado", "aislado", "hedge", "one_way", "oneway")
+                for t in reversed(tokens):
+                    if t in mode_words:
+                        value = {"cruzado": "CROSS", "aislado": "isolated"}.get(t, t.upper())
+                        if value == "ISOLATED" or value == "isolated":
+                            value = "ISOLATION" if key == "margin_mode" else "ISOLATED"
+                        break
+            if value is None:
+                return None
+
+            if key == "margin_mode":
+                cmd = f"/margin {value}"
+                note = f"\n\n(Risk note: CROSS trades are capped at {settings.cross_margin_risk_ceiling_pct}% of equity.)"
+            elif key == "position_mode":
+                cmd = f"/position_mode {value}"
+                note = ""
+            elif key == "risk_per_trade_pct":
+                cmd = f"/settings risk_per_trade_pct={value}"
+                note = (
+                    f"\n\n(⚠️ At {settings.leverage}x leverage with {value}% risk per trade, a single "
+                    f"stop-out can cost ~{value}% of equity — verify your SL sizing.)"
+                )
+            elif key == "leverage":
+                cmd = f"/leverage {value}"
+                note = ""
+            else:
+                cmd = f"/settings {key}={value}"
+                note = ""
+            return cmd, note
+
+    def _honesty_correction(self, reply: str) -> Optional[str]:
+        """Detect LLM claims of state changes it cannot execute, and correct them.
+
+        The conversational LLM has no execution ability — only slash commands
+        mutate state. Any claim that a setting was changed/applied/saved is a
+        fabrication and gets a factual correction appended.
+        """
+        lowered = reply.lower()
+        claim_markers = (
+            "set to", "changed to", "updated to", "has been set", "is now set",
+            "i've set", "i have set", "saved", "applied", "configurado",
+            "actualizado", "he cambiado", "he establecido",
+        )
+        if not any(m in lowered for m in claim_markers):
+            return None
+        # Exception: the reply itself recommends the slash command.
+        if "/settings" in reply or "/leverage" in reply or "/margin" in reply:
+            return None
+        settings = self.engine._settings
+        return (
+            "⚠️ Correction: no setting has been changed by that reply — this agent's "
+            "conversation layer cannot execute anything. Current values: risk per trade "
+            f"{settings.risk_per_trade_pct}%, leverage {settings.leverage}x, margin "
+            f"{settings.margin_mode}, autotrade "
+            f"{'ON' if settings.autotrade_enabled else 'OFF'}. To apply a change, run the "
+            "slash command (e.g. /settings risk_per_trade_pct=20); commands are executed "
+            "and verified by the runtime."
+        )
 
     async def think(self, prompt: str) -> str:
         """Single-shot LLM call for reasoning tasks."""
