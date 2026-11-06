@@ -44,7 +44,7 @@ class EngineSettings:
     trailing_stop_roi_pct: float = 6.0      # trailing trigger fires at this ROI%
     trailing_distance_pct: float = 2.0      # SL distance behind price once trailing (ROI%)
     liq_sl_distance_pct: float = 50.0       # SL is this % of (entry -> liq) distance from entry
-    sl_stop_type: str = "MARK"              # MARK | LAST_PRICE
+    sl_stop_type: str = "LAST_PRICE"        # MARK | LAST_PRICE
 
     # Safety
     liq_unsafe_refusal: bool = True         # refuse the trade if SL would be too close to liquidation

@@ -269,7 +269,7 @@ class Engine:
                         tp_price=tp_price,
                         tp_stop_type=tp_st,
                         sl_price=str(round(be_price, 4)),
-                        sl_stop_type="MARK",
+                        sl_stop_type="LAST_PRICE",
                     )
                     msgs.append(f"  {symbol} {side} pos {pid}: SL moved to breakeven {be_price:.4f}")
                 except Exception as e:

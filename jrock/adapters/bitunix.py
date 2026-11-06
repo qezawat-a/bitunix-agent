@@ -489,8 +489,22 @@ class BitunixClient:
     # Positions                                                           #
     # ------------------------------------------------------------------ #
 
-    async def get_pending_positions(self, symbol: Optional[str] = None) -> list:
-        params = {"symbol": symbol} if symbol else {}
+    async def get_pending_positions(
+        self,
+        symbol: Optional[str] = None,
+        position_id: str = "",
+        sub_account_uid: Optional[str] = None,
+        include_sub_accounts: bool = False,
+    ) -> list:
+        params: dict = {}
+        if symbol:
+            params["symbol"] = symbol
+        if position_id:
+            params["positionId"] = position_id
+        if sub_account_uid:
+            params["subAccountId"] = sub_account_uid
+        if include_sub_accounts:
+            params["includeSubAccounts"] = include_sub_accounts
         data = await self._get("/position/get_pending_positions", params)
         if isinstance(data, list):
             return data
@@ -501,20 +515,26 @@ class BitunixClient:
     async def get_history_positions(
         self,
         symbol: Optional[str] = None,
+        position_id: str = "",
         start_time: Optional[int] = None,
         end_time: Optional[int] = None,
         limit: int = 100,
         skip: int = 0,
+        sub_account_uid: Optional[str] = None,
     ) -> list:
         params: dict = {"limit": min(int(limit), 100)}
         if skip:
             params["skip"] = skip
         if symbol:
             params["symbol"] = symbol
+        if position_id:
+            params["positionId"] = position_id
         if start_time:
             params["startTime"] = start_time
         if end_time:
             params["endTime"] = end_time
+        if sub_account_uid:
+            params["subAccountId"] = sub_account_uid
         data = await self._get("/position/get_history_positions", params)
         if isinstance(data, list):
             return data
@@ -546,9 +566,13 @@ class BitunixClient:
         tp_price: str = "",
         tp_stop_type: str = "",
         tp_order_type: str = "",
+        tp_order_price: str = "",
+
         sl_price: str = "",
         sl_stop_type: str = "",
         sl_order_type: str = "",
+        sl_order_price: str = "",
+
     ) -> Any:
         """Open or close a position.
 
@@ -581,12 +605,16 @@ class BitunixClient:
             body["clientId"] = client_id
         if tp_price:
             body["tpPrice"] = str(tp_price)
-            body["tpStopType"] = tp_stop_type or "MARK_PRICE"
-            body["tpOrderType"] = tp_order_type or "MARKET"
+            body["tpStopType"] = self._normalize_trigger(tp_stop_type or "LAST_PRICE")
+            body["tpOrderType"] = (tp_order_type or "MARKET").upper()
+            if tp_order_price:
+                body["tpOrderPrice"] = str(tp_order_price)
         if sl_price:
             body["slPrice"] = str(sl_price)
-            body["slStopType"] = sl_stop_type or "MARK_PRICE"
-            body["slOrderType"] = sl_order_type or "MARKET"
+            body["slStopType"] = self._normalize_trigger(sl_stop_type or "LAST_PRICE")
+            body["slOrderType"] = (sl_order_type or "MARKET").upper()
+            if sl_order_price:
+                body["slOrderPrice"] = str(sl_order_price)
         return await self._post("/trade/place_order", body)
 
     async def batch_order(self, symbol: str, order_list: list) -> Any:
@@ -615,8 +643,14 @@ class BitunixClient:
             body["clientId"] = client_id
         for key in ("tpPrice", "tpStopType", "tpOrderType", "tpOrderPrice",
                     "slPrice", "slStopType", "slOrderType", "slOrderPrice"):
-            if tpsl.get(key):
-                body[key] = tpsl[key]
+            val = tpsl.get(key)
+            if val:
+                if key in ("tpStopType", "slStopType"):
+                    body[key] = self._normalize_trigger(str(val))
+                elif key in ("tpOrderType", "slOrderType"):
+                    body[key] = str(val).upper()
+                else:
+                    body[key] = val
         return await self._post("/trade/modify_order", body)
 
     async def cancel_orders(self, symbol: str, order_ids: list) -> Any:
@@ -646,11 +680,29 @@ class BitunixClient:
         return await self._post("/trade/close_all_position", body)
 
     async def get_pending_orders(
-        self, symbol: Optional[str] = None, limit: int = 100, skip: int = 0
+        self,
+        symbol: Optional[str] = None,
+        order_id: str = "",
+        client_id: str = "",
+        status: str = "",
+        start_time: Optional[int] = None,
+        end_time: Optional[int] = None,
+        limit: int = 100,
+        skip: int = 0,
     ) -> list:
         params: dict = {"limit": min(int(limit), 100)}
         if symbol:
             params["symbol"] = symbol
+        if order_id:
+            params["orderId"] = order_id
+        if client_id:
+            params["clientId"] = client_id
+        if status:
+            params["status"] = status
+        if start_time:
+            params["startTime"] = start_time
+        if end_time:
+            params["endTime"] = end_time
         if skip:
             params["skip"] = skip
         data = await self._get("/trade/get_pending_orders", params)
@@ -663,20 +715,38 @@ class BitunixClient:
     async def get_history_orders(
         self,
         symbol: Optional[str] = None,
+        order_id: str = "",
+        client_id: str = "",
+        status: str = "",
+        order_type: str = "",
         start_time: Optional[int] = None,
         end_time: Optional[int] = None,
         limit: int = 100,
         skip: int = 0,
+        sub_account_uid: Optional[str] = None,
+        query_canceled: Optional[bool] = None,
     ) -> list:
         params: dict = {"limit": min(int(limit), 100)}
         if skip:
             params["skip"] = skip
         if symbol:
             params["symbol"] = symbol
+        if order_id:
+            params["orderId"] = order_id
+        if client_id:
+            params["clientId"] = client_id
+        if status:
+            params["status"] = status
+        if order_type:
+            params["type"] = order_type.upper()
         if start_time:
             params["startTime"] = start_time
         if end_time:
             params["endTime"] = end_time
+        if sub_account_uid:
+            params["subAccountId"] = sub_account_uid
+        if query_canceled is not None:
+            params["queryCanceled"] = bool(query_canceled)
         data = await self._get("/trade/get_history_orders", params)
         if isinstance(data, list):
             return data
@@ -687,6 +757,8 @@ class BitunixClient:
     async def get_history_trades(
         self,
         symbol: Optional[str] = None,
+        order_id: str = "",
+        position_id: str = "",
         start_time: Optional[int] = None,
         end_time: Optional[int] = None,
         limit: int = 100,
@@ -697,6 +769,10 @@ class BitunixClient:
             params["skip"] = skip
         if symbol:
             params["symbol"] = symbol
+        if order_id:
+            params["orderId"] = order_id
+        if position_id:
+            params["positionId"] = position_id
         if start_time:
             params["startTime"] = start_time
         if end_time:
@@ -715,7 +791,7 @@ class BitunixClient:
     @staticmethod
     def _normalize_trigger(stop_type: str) -> str:
         """The API enum is MARK_PRICE / LAST_PRICE; accept the short forms too."""
-        st = (stop_type or "MARK_PRICE").upper()
+        st = (stop_type or "LAST_PRICE").upper()
         if st in ("MARK", "MARK_PRICE"):
             return "MARK_PRICE"
         if st in ("LAST", "LAST_PRICE", "LASTPRICE"):
@@ -737,6 +813,8 @@ class BitunixClient:
         sl_order_type: str = "",
         sl_order_price: str = "",
         sl_qty: str = "",
+        *, position_level: bool = False,
+
     ) -> dict:
         body: dict = {"symbol": symbol}
         if position_id:
@@ -744,19 +822,21 @@ class BitunixClient:
         if tp_price:
             body["tpPrice"] = str(tp_price)
             body["tpStopType"] = cls._normalize_trigger(tp_stop_type)
-            body["tpOrderType"] = (tp_order_type or "MARKET").upper()
-            if tp_order_price and tp_order_price != "0":
-                body["tpOrderPrice"] = str(tp_order_price)
-            if tp_qty and tp_qty != "0":
-                body["tpQty"] = str(tp_qty)
+            if not position_level:
+                body["tpOrderType"] = (tp_order_type or "MARKET").upper()
+                if tp_order_price and tp_order_price != "0":
+                    body["tpOrderPrice"] = str(tp_order_price)
+                if tp_qty and tp_qty != "0":
+                    body["tpQty"] = str(tp_qty)
         if sl_price:
             body["slPrice"] = str(sl_price)
             body["slStopType"] = cls._normalize_trigger(sl_stop_type)
-            body["slOrderType"] = (sl_order_type or "MARKET").upper()
-            if sl_order_price and sl_order_price != "0":
-                body["slOrderPrice"] = str(sl_order_price)
-            if sl_qty and sl_qty != "0":
-                body["slQty"] = str(sl_qty)
+            if not position_level:
+                body["slOrderType"] = (sl_order_type or "MARKET").upper()
+                if sl_order_price and sl_order_price != "0":
+                    body["slOrderPrice"] = str(sl_order_price)
+                if sl_qty and sl_qty != "0":
+                    body["slQty"] = str(sl_qty)
         if "tpPrice" not in body and "slPrice" not in body:
             raise ValueError("TP/SL request needs at least one of tp_price or sl_price")
         return body
@@ -771,7 +851,7 @@ class BitunixClient:
         """Position-level TP/SL — closes the whole position (one per position)."""
         if not kwargs.get("position_id"):
             raise ValueError("place_position_tpsl_order requires position_id")
-        return await self._post("/tpsl/position/place_order", self._tpsl_body(**kwargs))
+        return await self._post("/tpsl/position/place_order", self._tpsl_body(**kwargs, position_level=True))
 
     async def modify_tpsl_order(self, order_id: str, **kwargs) -> Any:
         """Modify an existing TP/SL order. orderId is the only required field."""
@@ -813,10 +893,10 @@ class BitunixClient:
         body: dict = {"positionId": position_id, "symbol": symbol}
         if tp_price:
             body["tpPrice"] = str(tp_price)
-            body["tpStopType"] = self._normalize_trigger(tp_stop_type or "MARK_PRICE")
+            body["tpStopType"] = self._normalize_trigger(tp_stop_type or "LAST_PRICE")
         if sl_price:
             body["slPrice"] = str(sl_price)
-            body["slStopType"] = self._normalize_trigger(sl_stop_type or "MARK_PRICE")
+            body["slStopType"] = self._normalize_trigger(sl_stop_type or "LAST_PRICE")
         if len(body) == 2:
             raise ValueError("modify_position_tpsl_order needs tp_price or sl_price")
         return await self._post("/tpsl/position/modify_order", body)
@@ -825,10 +905,26 @@ class BitunixClient:
         """One cancellation per request; the field is orderId, not tpslIds."""
         return await self._post("/tpsl/cancel_order", {"symbol": symbol, "orderId": tpsl_id})
 
-    async def get_pending_tpsl_orders(self, symbol: Optional[str] = None, limit: int = 100) -> list:
+    async def get_pending_tpsl_orders(
+        self,
+        symbol: Optional[str] = None,
+        position_id: str = "",
+        side: Optional[int] = None,
+        position_mode: Optional[int] = None,
+        limit: int = 100,
+        skip: int = 0,
+    ) -> list:
         params: dict = {"limit": min(int(limit), 100)}
         if symbol:
             params["symbol"] = symbol
+        if position_id:
+            params["positionId"] = position_id
+        if side is not None:
+            params["side"] = side
+        if position_mode is not None:
+            params["positionMode"] = position_mode
+        if skip:
+            params["skip"] = skip
         data = await self._get("/tpsl/get_pending_orders", params)
         if isinstance(data, list):
             return data
@@ -839,17 +935,26 @@ class BitunixClient:
     async def get_history_tpsl_orders(
         self,
         symbol: Optional[str] = None,
+        side: Optional[int] = None,
+        position_mode: Optional[int] = None,
         start_time: Optional[int] = None,
         end_time: Optional[int] = None,
         limit: int = 100,
+        skip: int = 0,
     ) -> list:
         params: dict = {"limit": min(int(limit), 100)}
         if symbol:
             params["symbol"] = symbol
+        if side is not None:
+            params["side"] = side
+        if position_mode is not None:
+            params["positionMode"] = position_mode
         if start_time:
             params["startTime"] = start_time
         if end_time:
             params["endTime"] = end_time
+        if skip:
+            params["skip"] = skip
         data = await self._get("/tpsl/get_history_orders", params)
         if isinstance(data, list):
             return data
@@ -868,7 +973,7 @@ class BitunixClient:
         *,
         tp_price: str = "",
         sl_price: str = "",
-        stop_type: str = "MARK_PRICE",
+        stop_type: str = "LAST_PRICE",
         qty: str = "",
     ) -> Any:
         """Set TP/SL on a position, replacing any existing ones.
