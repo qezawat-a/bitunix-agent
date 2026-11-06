@@ -91,6 +91,25 @@ _CONFIG_INTENT_PATTERNS: list[tuple[tuple[str, ...], str]] = [
     (("balance", "balanceo", "show me the balance", "pnl", "profit", "loss", "equity"), "pnl"),
     # soul
     (("soul", "persona", "set the soul", "switch soul", "change soul"), "soul"),
+    # --- expanded coverage (every settings field must be reachable from chat) ---
+    (("autotrade", "auto trade", "auto-trade"), "autotrade"),
+    (("scanner", "scan is on", "scan is off", "scan enabled", "scan disabled", "turn scan"), "scan"),
+    (("breakeven threshold", "breakeven", "break even", "breakeven threshold pct"), "breakeven_threshold_pct"),
+    (("trailing stop", "trailing", "trail stop", "trailing stop roi"), "trailing_stop_roi_pct"),
+    (("liq sl distance", "liq distance", "liquidation distance", "liq sl"), "liq_sl_distance_pct"),
+    (("min agreeing strategies", "agreeing strategies", "min agreeing"), "min_agreeing_strategies"),
+    (("timeframes", "timeframe", "time frame", "time frames"), "timeframes"),
+    (("tf min confidence", "tfminconfidence", "tf_min_confidence", "timeframe confidence"), "tf_min_confidence"),
+    (("reversal confidence", "reversal_conf"), "reversal_confidence"),
+    (("report interval", "report_interval", "report every"), "report_interval_sec"),
+    (("scan on", "scanner on", "scan off", "scanner off", "scan on/off"), "scan"),
+    (("report on", "report off", "turn report", "enable report", "disable report"), "report"),
+    (("engine on", "engine off", "turn engine", "engine status", "start engine", "stop engine"), "engine"),
+    (("start trading", "stop trading", "start autotrade", "stop autotrade"), "autotrade"),
+    (("max daily loss", "max_daily_loss", "daily loss pct"), "max_daily_loss_pct"),
+    (("cross margin risk", "cross risk ceiling", "cross ceiling", "margin risk ceiling"), "cross_margin_risk_ceiling_pct"),
+    (("max notional", "notional total", "notional limit", "max_notional_total"), "max_notional_total"),
+    (("sl stop type", "sl_stop_type", "stop trigger type"), "sl_stop_type"),
 ]
 
 _NEGATION_PATTERNS = (
@@ -205,6 +224,19 @@ class AgentRuntime:
 
     def list_souls(self) -> list[str]:
         return list(self._souls.keys())
+
+    async def request_confirmation(self, prompt: str) -> bool:
+        """Confirmation gate for high-impact actions (force-push etc.).
+
+        Delegates to the bot-provided confirm callback (Telegram approve/reject)
+        when wired, otherwise blocks when auto_accept is off, and allows when
+        auto_accept is on.
+        """
+        if self.auto_accept:
+            return True
+        if self._confirm is None:
+            return False
+        return bool(await self._confirm(prompt))
 
     def switch_soul(self, name: str) -> bool:
         name = name.lower().strip()
@@ -330,6 +362,17 @@ class AgentRuntime:
                 "Please use the exact command, e.g. `/settings risk_per_trade_pct=20`, "
                 "`/leverage 10`, `/margin CROSS`. No state was changed."
             )
+            return
+
+        # 4. REAL tool calling: let the LLM emit function calls; WE execute them
+        #    through the registry. This is the fix for "says ok but does nothing":
+        #    the old path was text-only, so a change request silently fell through
+        #    to the LLM. Now a config-style request produces a tool call, and the
+        #    tool result (with the verified before -> after diff) goes back to the
+        #    model, which can then only report what actually happened.
+        tool_reply = await self._run_tool_loop(text)
+        if tool_reply is not None:
+            yield tool_reply
             return
 
         # 4. Pure conversation: hand to the LLM, then verify its output.
@@ -706,3 +749,142 @@ class AgentRuntime:
         if self._confirm:
             return await self._confirm(action)
         return False
+
+# ------------------------------------------------------------------ #
+# Real tool calling (OpenAI function calling pattern, registry-backed) #
+# ------------------------------------------------------------------ #
+
+_TOOL_SYSTEM_SUFFIX = """
+
+You have access to real tools (the J+ROCK command registry). When the user asks
+you to change, view or control anything, you MUST call the matching tool instead
+of describing it. Calling the tool is how changes happen — chat text changes
+nothing. After the tool returns a result, report the BEFORE → AFTER state from
+that result exactly. Never claim a change you did not execute (tool result ok
+must be true and the field must appear in the diff). If the tool errors, report
+the error honestly and stop. Do not invent tool names — only call tools listed.
+"""
+
+def _tool_calls_from_openai(raw: dict) -> list[dict]:
+    """Extract tool_calls from an OpenAI-compatible chat completion payload."""
+    try:
+        msg = raw["choices"][0]["message"]
+    except Exception:
+        return []
+    calls = []
+    for tc in msg.get("tool_calls") or []:
+        name = (tc.get("function") or {}).get("name", "")
+        args_raw = (tc.get("function") or {}).get("arguments") or "{}"
+        if isinstance(args_raw, str):
+            try:
+                args = json.loads(args_raw) if args_raw.strip() else {}
+            except json.JSONDecodeError:
+                args = {}
+        elif isinstance(args_raw, dict):
+            args = args_raw
+        else:
+            args = {}
+        if name:
+            calls.append({"id": tc.get("id", name), "name": name, "args": args})
+    return calls
+
+
+class _ToolLoopMixin:
+    """Tool-calling methods used by AgentRuntime.
+
+    Implemented as a standalone class (no instance state of its own) and
+    promoted onto AgentRuntime below via attribute aliasing. This avoids
+    re-basing the class (which changes its deallocator/layout and is invalid
+    for a class that already exists).
+    """
+
+    async def _run_tool_loop(self, text: str) -> Optional[str]:
+        """Run one message through the tool loop. Returns the rendered answer,
+        or None if the model chose not to call any tool (plain conversation)."""
+        if not self.registry or not hasattr(self.registry, "tool_schema"):
+            return None
+        tools = self.registry.tool_schema()
+        if not tools:
+            return None
+        try:
+            convo = [{"role": "user", "content": text}]
+            executed: list[tuple[str, dict, bool, str, dict]] = []
+            turns = 0
+            while turns < 6:
+                turns += 1
+                raw = await self._llm.complete_raw(
+                    convo, system=self._build_system_prompt() + _TOOL_SYSTEM_SUFFIX,
+                    tools=tools, temperature=0.0,
+                )
+                calls = _tool_calls_from_openai(raw)
+                if not calls:
+                    # Model answered in plain text. Only treat as a turn result
+                    # if at least one tool ran; otherwise fall through to the
+                    # normal conversation path (return None).
+                    if executed:
+                        final = (raw.get("choices") or [{}])[0].get("message", {}).get("content", "")
+                        return (final or "").strip() or self._render_tool_summary(executed)
+                    return None
+                # Execute every call in order; results feed back to the model.
+                results = []
+                for call in calls:
+                    before = self._snapshot_settings()
+                    cmd_text, ok, err, diff = await self._execute_named_tool(call["name"], call["args"])
+                    after_diff = self._settings_diff(before)
+                    executed.append((call["name"], call["args"], ok, err, after_diff))
+                    results.append((call, ok, err, after_diff))
+                for call, ok, err, after_diff in results:
+                    convo.append({
+                        "role": "assistant",
+                        "content": "",
+                        "tool_calls": [{
+                            "id": call["id"], "type": "function",
+                            "function": {"name": call["name"], "arguments": json.dumps(call["args"])},
+                        }],
+                    })
+                    convo.append({
+                        "role": "tool", "tool_call_id": call["id"],
+                        "content": json.dumps({"ok": ok, "error": err, "diff": after_diff}),
+                    })
+            if executed:
+                return self._render_tool_summary(executed)
+        except Exception as e:  # provider unreachable, bad JSON, etc.
+            log.warning("tool loop failed, falling back to chat: %s", e)
+            return None
+        return None
+
+    def _render_tool_summary(self, executed) -> str:
+        lines = []
+        for name, args, ok, err, diff in executed:
+            shown = ", ".join(f"{k}={v}" for k, v in args.items())
+            if ok:
+                chg = "; ".join(f"{k}: {b} -> {a}" for k, (b, a) in diff.items()) or "no state change"
+                lines.append(f"✅ /{name}{(' ' + shown) if shown else ''}: {chg}")
+            else:
+                lines.append(f"❌ /{name}: {err}")
+        return "\n".join(lines)
+
+    async def _execute_named_tool(self, name: str, args: dict) -> tuple[str, bool, str, dict]:
+        """Execute a tool call by name via registry.dispatch (verbatim, no fuzzy rescue).
+
+        Tool calls address commands by canonical name only: the LLM must call a
+        real tool from the provided list. Typo rescue would turn a non-existent
+        tool into a different command silently, which defeats the point.
+        """
+        raw = "/" + name
+        parts = [raw]
+        for k, v in (args or {}).items():
+            if v == "" or v is None:
+                continue
+            parts.append(f"{k}={v}")
+        cmd_text = " ".join(parts)
+        before = self._snapshot_settings()
+        result = await self.registry.dispatch(cmd_text, engine=self.engine, agent=self, registry=self.registry)
+        return cmd_text, bool(result.ok), (result.error if not result.ok else ""), self._settings_diff(before)
+
+
+# Promote the mixin methods onto AgentRuntime by direct aliasing, so both the
+# instance and the class expose them without re-basing (which would break layout).
+AgentRuntime._run_tool_loop = _ToolLoopMixin._run_tool_loop
+AgentRuntime._render_tool_summary = _ToolLoopMixin._render_tool_summary
+AgentRuntime._execute_named_tool = _ToolLoopMixin._execute_named_tool

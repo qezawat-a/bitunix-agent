@@ -185,6 +185,13 @@ class Executor:
         qty_str = str(size.qty)
         tpsl_plan = compute_tpsl(signal, entry, size.qty, s.leverage, s, tiers=tiers)
 
+        # liqUnsafe refusal: never open a position whose SL is too close to the
+        # liquidation price (computed plan is invalid in that case).
+        if not tpsl_plan.valid:
+            _journal("tpsl_invalid_refused", symbol=sym, reason=tpsl_plan.reason)
+            return TradeResult(False, sym, signal.direction, qty_str, entry,
+                               error=f"liqUnsafe refusal: {tpsl_plan.reason}")
+
         summary = (
             f"OPEN {signal.direction} {sym}\n"
             f"  qty={qty_str}  entry≈{entry:.4f}\n"
@@ -207,7 +214,9 @@ class Executor:
         _journal("order_intent", symbol=sym, direction=signal.direction,
                  qty=qty_str, entry=entry, tpsl=asdict(tpsl_plan) if tpsl_plan.valid else {})
 
-        # 5. Set leverage + margin mode.
+        # 5. Set leverage, margin mode and position mode before opening.
+        #    Margin/position mode failures are fail-open: the exchange may
+        #    already be in that mode, and a hard refusal would block all trades.
         try:
             await self._client.change_leverage(sym, s.leverage)
         except BitunixError as e:
@@ -219,13 +228,59 @@ class Executor:
         except BitunixError as e:
             log.warning("margin mode set to %s failed: %s (may already be set)", s.margin_mode, e)
 
-        # 6. Place the order.
+        # Position mode is required before opening in HEDGE mode.
+        if hasattr(self._client, "change_position_mode"):
+            try:
+                await self._client.change_position_mode(s.position_mode)
+            except BitunixError as e:
+                log.warning("position mode set to %s failed: %s", s.position_mode, e)
+
+        # 6. Place the order with embedded TP/SL, so the position is never
+        #    unprotected between the fill and a follow-up TP/SL call.
         side = "BUY" if signal.direction == "LONG" else "SELL"
+        embedded_tp = str(tpsl_plan.tp_price) if tpsl_plan.valid else ""
+        embedded_sl = str(tpsl_plan.sl_price) if tpsl_plan.valid else ""
+        # The adapter accepts embedded TP/SL on the open order — use it.
+        # Fallback to the post-fill attach only if the exchange rejects the
+        # embedded form.
+        embedded_ok = False
+        result = None
         try:
-            result = await self._client.place_order(
-                sym, side=side, trade_side="OPEN",
-                order_type="MARKET", qty=qty_str,
-            )
+            if embedded_tp and embedded_sl:
+                result = await self._client.place_order(
+                    sym, side=side, trade_side="OPEN",
+                    order_type="MARKET", qty=qty_str,
+                    tp_price=embedded_tp, tp_stop_type=tpsl_plan.tp_stop_type(),
+                    tp_order_type="MARKET",
+                    sl_price=embedded_sl, sl_stop_type=tpsl_plan.stop_type(),
+                    sl_order_type="MARKET",
+                )
+                embedded_ok = True
+            else:
+                result = await self._client.place_order(
+                    sym, side=side, trade_side="OPEN",
+                    order_type="MARKET", qty=qty_str,
+                )
+        except BitunixError as e:
+            # If the embedded form was rejected, fall back to a plain open and
+            # let the post-fill attach below add the protection.
+            if embedded_ok:
+                log.warning("embedded TPSL rejected, retrying bare open: %s", e)
+                try:
+                    result = await self._client.place_order(
+                        sym, side=side, trade_side="OPEN",
+                        order_type="MARKET", qty=qty_str,
+                    )
+                    embedded_ok = False
+                except BitunixError as e2:
+                    _journal("order_failed", symbol=sym, error=str(e2))
+                    return TradeResult(False, sym, signal.direction, qty_str, entry,
+                                       error=f"place_order failed: {e2}")
+            else:
+                _journal("order_failed", symbol=sym, error=str(e))
+                return TradeResult(False, sym, signal.direction, qty_str, entry,
+                                   error=f"place_order failed: {e}")
+        # (The original step 6 error path is retained below for the non-embedded flow.)
         except BitunixError as e:
             _journal("order_failed", symbol=sym, error=str(e))
             return TradeResult(False, sym, signal.direction, qty_str, entry,
@@ -249,8 +304,12 @@ class Executor:
         actual_entry = float(pos.get("avgOpenPrice") or pos.get("entryPrice") or entry) if pos else entry
         actual_qty = str(pos.get("qty") or qty_str) if pos else qty_str
 
-        # 8. Attach TPSL.
-        tpsl_ok = False
+        # 8. Attach TPSL (skip if already embedded on the open order).
+        tpsl_ok = bool(embedded_ok)
+        if embedded_ok:
+            tp_price = tpsl_plan.tp_price
+            sl_price = tpsl_plan.sl_price
+            _journal("tpsl_set", symbol=sym, position_id=position_id, tp=tp_price, sl=sl_price, via="embedded")
         tp_price = 0.0
         sl_price = 0.0
         if tpsl_plan.valid and position_id:

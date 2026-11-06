@@ -59,6 +59,18 @@ _VALID_INTERVALS = {
 }
 
 
+def _parse_ts(v) -> int:
+    """Trade pushes carry ISO-8601 `t` (e.g. 2026-04-07T05:47:52Z). Coerce to int ms."""
+    try:
+        return int(v)
+    except (TypeError, ValueError):
+        try:
+            import datetime as _dt
+            s = str(v).replace("Z", "+00:00")
+            return int(_dt.datetime.fromisoformat(s).timestamp() * 1000)
+        except Exception:
+            return 0
+
 def kline_channel(symbol: str, interval: str, mark: bool = False) -> str:
     """Build a kline channel name: market_kline_1min / mark_kline_1min."""
     iv = _VALID_INTERVALS.get(interval, interval)
@@ -483,7 +495,7 @@ class PublicWsClient:
                 price=float(item.get("p") or item.get("price") or 0),
                 qty=float(item.get("v") or item.get("qty") or 0),
                 side=str(item.get("s") or item.get("side") or ""),
-                ts=int(item.get("t") or ts),
+                ts=_parse_ts(item.get("t") or ts),
             )
             for cb in self._trade_cbs:
                 asyncio.create_task(self._call(cb, ev))

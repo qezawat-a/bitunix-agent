@@ -336,8 +336,10 @@ class BitunixClient:
         returned is the last closed candle. Only closed candles are returned.
         """
         params: dict = {"symbol": symbol, "interval": interval, "limit": min(int(limit), 200)}
-        if start_time:
-            params["startTime"] = start_time
+        # The official kline endpoint documents only symbol/endTime/interval/limit/type —
+        # no startTime. Accepting it silently ignored the caller's paging intent;
+        # keep the signature for compatibility but never send it on the wire.
+        _ = start_time
         if end_time:
             params["endTime"] = end_time
         if kline_type:
@@ -553,8 +555,8 @@ class BitunixClient:
         Hedge-mode direction table (from the official docs):
             open long   -> side=BUY,  tradeSide=OPEN
             open short  -> side=SELL, tradeSide=OPEN
-            close long  -> side=SELL, tradeSide=CLOSE
-            close short -> side=BUY,  tradeSide=CLOSE
+            close long  -> side=BUY,  tradeSide=CLOSE
+            close short -> side=SELL, tradeSide=CLOSE
 
         Embedded TP/SL is accepted on the open order itself, which removes the
         unprotected window between fill and a follow-up TP/SL call.

@@ -178,7 +178,7 @@ class RiskLimits:
     max_notional_total: float = 0.0  # 0 = unlimited
     max_daily_loss_pct: float = 5.0
     max_single_loss_pct: float = 2.0
-    min_margin_buffer_pct: float = 10.0
+    min_margin_buffer_pct: float = 20.0
     margin_mode: str = "ISOLATED"   # ISOLATED | CROSS
     cross_margin_risk_ceiling_pct: float = 25.0  # hard cap: margin risk % of equity under CROSS
     allow_new_positions: bool = True

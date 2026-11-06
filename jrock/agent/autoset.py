@@ -22,6 +22,16 @@ log = logging.getLogger(__name__)
 PROBE_TIMEOUT = 10.0
 COMPLETION_TIMEOUT = 20.0
 PROBE_MSG = [{"role": "user", "content": "Say OK"}]
+TOOLS = [{
+    "type": "function",
+    "function": {
+        "name": "probe_ok",
+        "description": "Probe tool call",
+        "parameters": {"type": "object", "properties": {"ok": {"type": "boolean"}}, "required": []},
+    },
+}]
+PREFERRED_CHAT_MARKERS = ("chat", "gpt", "claude", "llama", "gemini", "qwen", "moonshot", "kimi", "deepseek", "mistral", "mixtral", "phi", "gemma", "command", "o1", "o3")
+_SKIP_MARKERS = ("embed", "rerank", "bge", "clip", "vision", "whisper", "tts", "stt", "image", "audio")
 
 
 @dataclass
@@ -78,7 +88,11 @@ async def _probe_model(base_url: str, api_key: str, model_id: str) -> ModelInfo:
     info = ModelInfo(id=model_id)
     url = base_url.rstrip("/") + "/v1/chat/completions"
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
-    body = {"model": model_id, "messages": PROBE_MSG, "max_tokens": 5, "stream": False}
+    # The probe must look like the agent's real usage: a tool-call-capable
+    # completion, not a plain text chat. Providers that fail on tools will show
+    # up as broken before the user ever relies on them.
+    body = {"model": model_id, "messages": PROBE_MSG, "max_tokens": 5, "stream": False,
+            "tools": TOOLS, "tool_choice": "auto"}
 
     try:
         t0 = time.monotonic()
@@ -105,12 +119,18 @@ async def _probe_model(base_url: str, api_key: str, model_id: str) -> ModelInfo:
             info.error = "unexpected response shape"
             return info
 
+        tool_calls = []
+        try:
+            tool_calls = data["choices"][0]["message"].get("tool_calls") or []
+        except Exception:
+            tool_calls = []
         info.working = True
         info.latency_ms = dt
-        # Extract context window from model data if present.
-        info.context_window = int(data.get("usage", {}).get("prompt_tokens", 0)) * 100 or 0
-        # Score: lower latency + larger context = higher score.
-        info.score = 1000.0 / max(dt, 1) + info.context_window / 100_000
+        # Context window was previously fake (prompt_tokens * 100); without a
+        # real model-metadata endpoint we say 0 and rely on latency only.
+        info.context_window = 0
+        # Score: lower latency = higher score (context term removed).
+        info.score = 1000.0 / max(dt, 1) + (2.0 if tool_calls else 0.0)
 
     except httpx.TimeoutException:
         info.error = "timeout"
@@ -139,6 +159,20 @@ async def discover_models(
     if not model_ids:
         log.warning("model discovery: %s", err or "no models found")
         return []
+
+    # Filter to chat models only; embeddings/rerankers probe as failures and
+    # waste the probe budget.
+    def _is_chat(mid: str) -> bool:
+        m = mid.lower()
+        if any(s in m for s in _SKIP_MARKERS):
+            return False
+        return any(p in m for p in PREFERRED_CHAT_MARKERS)
+
+    chat_ids = [m for m in model_ids if _is_chat(m)]
+    if chat_ids:
+        model_ids = chat_ids
+    else:
+        log.debug("no chat-model names found; keeping all candidates")
 
     log.info("found %d model candidates, probing up to %d", len(model_ids), max_probe)
     model_ids = model_ids[:max_probe]

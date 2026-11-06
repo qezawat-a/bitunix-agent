@@ -138,7 +138,10 @@ def _ws_auth(api_key: str, secret_key: str) -> dict:
     """Generate WS login payload (different from REST — no body/query_str)."""
     nonce = _nonce()
     timestamp = str(int(time.time()))
-    digest = hashlib.sha256((nonce + timestamp + api_key).encode()).hexdigest()
+    params = "".join(f"{k}{v}" for k, v in sorted(
+        [("apiKey", api_key), ("nonce", nonce), ("timestamp", timestamp)]
+    ))
+    digest = hashlib.sha256((nonce + timestamp + api_key + params).encode()).hexdigest()
     sign = hashlib.sha256((digest + secret_key).encode()).hexdigest()
     return {
         "apiKey": api_key,

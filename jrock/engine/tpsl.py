@@ -45,7 +45,18 @@ class TPSLPlan:
     valid: bool = True
     reason: str = ""
 
-    def stop_type(self) -> str:
+    def stop_type(self, settings=None) -> str:
+        """Trigger price type for the SL leg. Honors settings.sl_stop_type.
+
+        settings exposes MARK | LAST_PRICE (from EngineSettings.sl_stop_type).
+        Defaults to LAST_PRICE if unset/unknown.
+        """
+        st = getattr(settings, "sl_stop_type", None) if settings else None
+        st = str(st).strip().upper() if st else ""
+        if st in {"MARK", "MARK_PRICE"}:
+            return "MARK_PRICE"
+        if st == "LAST_PRICE":
+            return "LAST_PRICE"
         return "LAST_PRICE"  # TPSL trigger fires off last price per spec
 
     def tp_stop_type(self) -> str:
@@ -124,6 +135,9 @@ def compute_tpsl(
         rr = 2.0
     else:
         rr = 1.5
+    # Note: the 75-tier (2.5x) is intentional; a live aggregate below
+    # min_confidence cannot reach the 1.5x tier, so RR is clamped to >= 2.0 in
+    # practice.
 
     tp_distance = sl_distance * rr
     if signal.direction == "LONG":
@@ -149,8 +163,13 @@ def compute_tpsl(
     else:
         liq_buffer = (est.liq_price - sl_final) / entry * 100
 
-    if liq_buffer < 0.05:
-        log.warning("SL too close to liquidation: buffer=%.3f%%", liq_buffer)
+    # liqUnsafe: refuse the trade if there is no safe buffer left between the
+    # SL and the liquidation price. Earlier code logged a warning and still
+    # returned a plan, so the executor opened positions with no real safety
+    # distance to the liquidation cascade.
+    if liq_buffer < 0.05 and getattr(settings, "liq_unsafe_refusal", False):
+        return TPSLPlan(entry, 0, 0, signal.direction, 0, 0, 0, est.liq_price, 0,
+                        valid=False, reason=f"inqUnsafe: SL buffer to liquidation is {liq_buffer:.4f}% (<0.05%)")
 
     return TPSLPlan(
         entry=entry,

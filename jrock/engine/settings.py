@@ -29,8 +29,9 @@ class EngineSettings:
     # Scanner
     scan_enabled: bool = False
     scan_interval_sec: int = 30
+    guard_interval_sec: int = 30            # trailing/breakeven monitor cadence (was implicitly 30)
     timeframes: list[str] = field(default_factory=lambda: ["1m", "3m", "5m", "15m"])
-    min_confidence: float = 70.0
+    min_confidence: float = 80.0
     tf_min_confidence: float = 60.0
     min_agreeing_strategies: int = 3
 
@@ -39,10 +40,14 @@ class EngineSettings:
     reversal_confidence: float = 75.0
 
     # TPSL (computed by engine from signal strength; only buffer params here)
-    breakeven_threshold_pct: float = 1.0    # trailing trigger: move stop to BE at this ROI%
-    trailing_stop_roi_pct: float = 2.0      # trailing trigger fires at this ROI%
+    breakeven_threshold_pct: float = 4.0    # trailing trigger: move stop to BE at this ROI%
+    trailing_stop_roi_pct: float = 6.0      # trailing trigger fires at this ROI%
+    trailing_distance_pct: float = 2.0      # SL distance behind price once trailing (ROI%)
     liq_sl_distance_pct: float = 50.0       # SL is this % of (entry -> liq) distance from entry
     sl_stop_type: str = "MARK"              # MARK | LAST_PRICE
+
+    # Safety
+    liq_unsafe_refusal: bool = True         # refuse the trade if SL would be too close to liquidation
 
     # Autotrade
     autotrade_enabled: bool = False

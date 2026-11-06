@@ -233,10 +233,19 @@ async def cmd_soul(
     return _err("Usage: /soul [show|list|switch <name>]")
 
 
-async def cmd_add_soul(name: str = "", *, agent: "AgentRuntime", **_) -> CommandResult:
+async def cmd_add_soul(name: str = "", content: str = "", *, agent: "AgentRuntime", **_) -> CommandResult:
     if not name:
-        return _err("Usage: /add_soul <name>  (then paste soul content on the next line)")
-    return _ok(f"Ready to receive soul `{name}`. Paste the soul content now.")
+        return _err("Usage: /add_soul <name> content=<markdown>")
+    if not content:
+        return _err("No content provided (content=...). Paste the soul markdown in content=.")
+    try:
+        from jrock.agent.runtime import SOULS_DIR
+        SOULS_DIR.mkdir(parents=True, exist_ok=True)
+        (SOULS_DIR / f"{name}.md").write_text(content, encoding="utf-8")
+        agent._load_souls()
+        return _ok(f"Soul `{name}` installed ({len(content)} chars).")
+    except Exception as e:
+        return _err(f"Failed to install soul: {e}")
 
 
 async def cmd_skill(action: str = "list", *args, agent: "AgentRuntime", **_) -> CommandResult:
@@ -251,10 +260,19 @@ async def cmd_skill(action: str = "list", *args, agent: "AgentRuntime", **_) -> 
     return _err("Usage: /skill [list|use <name>]")
 
 
-async def cmd_add_skill(name: str = "", *, agent: "AgentRuntime", **_) -> CommandResult:
+async def cmd_add_skill(name: str = "", content: str = "", *, agent: "AgentRuntime", **_) -> CommandResult:
     if not name:
-        return _err("Usage: /add_skill <name>")
-    return _ok(f"Ready to receive skill `{name}`. Paste the skill markdown now.")
+        return _err("Usage: /add_skill <name> content=<markdown>")
+    if not content:
+        return _err("No content provided (content=...). Paste the skill markdown in content=.")
+    try:
+        from jrock.agent.runtime import SKILLS_DIR
+        SKILLS_DIR.mkdir(parents=True, exist_ok=True)
+        (SKILLS_DIR / f"{name}.md").write_text(content, encoding="utf-8")
+        agent._load_skills()
+        return _ok(f"Skill `{name}` installed ({len(content)} chars).")
+    except Exception as e:
+        return _err(f"Failed to install skill: {e}")
 
 
 async def cmd_add_mcp(url: str = "", name: str = "", *, agent: "AgentRuntime", **_) -> CommandResult:
@@ -341,7 +359,8 @@ async def cmd_check_system(*, agent: "AgentRuntime", engine: "Engine", **_) -> C
     """Check for bugs/issues in the engine and agent codebase."""
     import subprocess
     results = []
-    proj = Path(__file__).resolve().parents[2]
+    # proj dir is the jrock package root (this file lives two levels up).
+    proj = Path(__file__).resolve().parents[1]
     for pkg in ["engine", "adapters", "strategies", "risk", "agent", "commands"]:
         d = proj / pkg
         if not d.exists():
@@ -438,6 +457,12 @@ async def cmd_git_push(
             "Git push not configured. Set GITHUB_PAT and GITHUB_REPO "
             "(or GIT_REPO_LINK) in .env / environment."
         )
+
+    # Confirmation gate: a force-push must never run silently (unless auto-accept).
+    if not agent.auto_accept:
+        allowed = await agent.request_confirmation(f"Force-push to {branch} ({message})?")
+        if not allowed:
+            return _err("Force-push cancelled by user.")
 
     result = await pusher.push_verified_assets(message=message, branch=branch)
     if result.ok:
@@ -594,6 +619,111 @@ async def cmd_positions(*, engine: "Engine", **_) -> CommandResult:
     return _ok(f"**Open positions ({len(lines)}):**\n" + "\n".join(lines), data=positions)
 
 
+async def cmd_cancels(
+    symbol: str = "",
+    *args,
+    engine: "Engine",
+    **_,
+) -> CommandResult:
+    """Cancel pending orders / TPSL orders for a symbol (or all if omitted)."""
+    try:
+        if symbol:
+            res = await engine._client.cancel_all_orders(symbol)
+            return _ok(f"All pending orders cancelled for {symbol}: {res}")
+        res = await engine._client.cancel_all_orders()
+        return _ok(f"All pending orders cancelled globally: {res}")
+    except Exception as e:
+        return _err(f"cancel failed: {e}")
+
+
+async def cmd_positions_history(
+    symbol: str = "",
+    *args,
+    engine: "Engine",
+    **_,
+) -> CommandResult:
+    """Closed/history positions (distinct from /positions which shows open)."""
+    try:
+        rows = await engine._client.get_history_positions(symbol or None)
+        if not rows:
+            return _ok("No closed positions in history.")
+        lines = ["**Closed positions:**"]
+        for p in rows[:20]:
+            sym = p.get("symbol", "?")
+            side = p.get("side", "?")
+            qty = p.get("qty", p.get("volume", "?"))
+            pnl = p.get("realizedPnl", p.get("pnl", "?"))
+            lines.append(f"  - {sym} {side} qty={qty} realizedPnl={pnl}")
+        if len(rows) > 20:
+            lines.append(f"  ... and {len(rows)-20} more")
+        return _ok("\n".join(lines))
+    except Exception as e:
+        return _err(f"history fetch failed: {e}")
+
+
+async def cmd_guard(
+    value: str = "",
+    engine: "Engine" = None,
+    **kw,
+) -> CommandResult:
+    """Get/set the trailing/breakeven guard cadence (guard_interval_sec)."""
+    if not value:
+        return _ok(f"Guard interval: {getattr(engine._settings, 'guard_interval_sec', '?')}s")
+    changed = await engine.update_settings(guard_interval_sec=value)
+    if "guard_interval_sec" not in changed:
+        return _ok(f"Guard interval already {engine._settings.guard_interval_sec}s.")
+    return _ok(f"Guard interval set to {engine._settings.guard_interval_sec}s.")
+
+
+async def cmd_breakeven(
+    value: str = "",
+    engine: "Engine" = None,
+    **kw,
+) -> CommandResult:
+    """Get/set breakeven trigger (ROI %)."""
+    if not value:
+        return _ok(f"Breakeven threshold: {engine._settings.breakeven_threshold_pct}% ROI")
+    changed = await engine.update_settings(breakeven_threshold_pct=value)
+    if "breakeven_threshold_pct" not in changed:
+        return _ok(f"Breakeven already {engine._settings.breakeven_threshold_pct}% ROI.")
+    return _ok(f"Breakeven threshold set to {engine._settings.breakeven_threshold_pct}% ROI.")
+
+
+async def cmd_trailing(
+    trigger: str = "",
+    distance: str = "",
+    *,
+    engine: "Engine",
+    **_,
+) -> CommandResult:
+    """Get/set trailing: /trailing [trigger%] [distance%]"""
+    if not trigger:
+        return _ok(
+            f"Trailing trigger: {engine._settings.trailing_stop_roi_pct}% ROI, "
+            f"distance: {getattr(engine._settings, 'trailing_distance_pct', 2.0)}% (ROI%)"
+        )
+    upd = {}
+    if trigger:
+        upd["trailing_stop_roi_pct"] = trigger
+    if distance:
+        upd["trailing_distance_pct"] = distance
+    changed = await engine.update_settings(**upd)
+    return _ok(f"Trailing updated: {', '.join(changed) or 'no change'}")
+
+
+async def cmd_lqdistance(
+    value: str = "",
+    engine: "Engine" = None,
+    **kw,
+) -> CommandResult:
+    if not value:
+        return _ok(f"Liquidation SL distance: {engine._settings.liq_sl_distance_pct}% of entry->liq")
+    changed = await engine.update_settings(liq_sl_distance_pct=value)
+    if "liq_sl_distance_pct" not in changed:
+        return _ok(f"Liq SL distance already {engine._settings.liq_sl_distance_pct}%.")
+    return _ok(f"Liq SL distance set to {engine._settings.liq_sl_distance_pct}%")
+
+
 async def cmd_close(
     symbol: str = "",
     position_id: str = "",
@@ -731,7 +861,7 @@ async def cmd_position_mode(
         return _ok(f"Position mode already {mode} (no change).")
     try:
         await engine._client.change_position_mode(mode)
-    except BitunixError as e:
+    except Exception as e:
         return _ok(f"Settings updated ({before} → {mode}) but live set failed: {e}")
     return _ok(f"Position mode set to {mode} (was {before}).")
 
@@ -897,57 +1027,63 @@ def build_registry() -> CommandRegistry:
 
     cmds = [
         # Agent
-        CommandDef("help", cmd_help, "Show this help", aliases=["h", "?"], category="agent"),
-        CommandDef("models", cmd_models, "List discovered models", category="agent"),
+        CommandDef("help", cmd_help, "Show this help", aliases=["h", "?"], category="agent", args_schema_props={}, args_schema_required=[]),
+        CommandDef("models", cmd_models, "List discovered models", category="agent", args_schema_props={}, args_schema_required=[]),
         CommandDef("set_model", cmd_set_model, "Set active model or auto-discover",
-                   args_schema="[model_id] [base_url=...] [api_key=...]", category="agent"),
+                   args_schema="[model_id] [base_url=...] [api_key=...]", category="agent", args_schema_props={"model_id": "string"}, args_schema_required=[]),
         CommandDef("automodelsetbykey", cmd_automodelsetbykey,
                    "Auto-probe models by API key and set the best one",
                    args_schema="[base_url=...] [api_key=...] [max_probe=20]",
                    aliases=["autoset", "probe_models", "autodiscover"],
-                   category="agent"),
+                   category="agent", args_schema_props={}, args_schema_required=[]),
         CommandDef("connect_provider", cmd_connect_provider, "Configure an LLM provider",
-                   args_schema="provider=openai base_url=... api_key=...", category="agent"),
-        CommandDef("think", cmd_think, "Deep reasoning on a topic", args_schema="[topic]", category="agent"),
-        CommandDef("memory", cmd_memory, "Manage agent memory", args_schema="[list|add|clear]", category="agent"),
-        CommandDef("soul", cmd_soul, "Show/switch agent soul/persona", args_schema="[show|list|switch <name>]", category="agent"),
-        CommandDef("add_soul", cmd_add_soul, "Install a new soul", args_schema="<name>", category="agent"),
-        CommandDef("skill", cmd_skill, "List/use skills", args_schema="[list|use <name>]", category="agent"),
-        CommandDef("add_skill", cmd_add_skill, "Add a new skill", args_schema="<name>", category="agent"),
-        CommandDef("add_mcp", cmd_add_mcp, "Register an MCP server", args_schema="url=... [name=...]", category="agent"),
-        CommandDef("mcp", cmd_mcp, "List MCP servers", category="agent"),
+                   args_schema="provider=openai base_url=... api_key=...", category="agent", args_schema_props={}, args_schema_required=[]),
+        CommandDef("think", cmd_think, "Deep reasoning on a topic", args_schema="[topic]", category="agent", args_schema_props={"topic": "string"}, args_schema_required=[]),
+        CommandDef("memory", cmd_memory, "Manage agent memory", args_schema="[list|add|clear]", category="agent", args_schema_props={}, args_schema_required=[]),
+        CommandDef("soul", cmd_soul, "Show/switch agent soul/persona", args_schema="[show|list|switch <name>]", category="agent", args_schema_props={"<name>": "string"}, args_schema_required=[]),
+        CommandDef("add_soul", cmd_add_soul, "Install a new soul (name + content=...)", args_schema="<name>", category="agent", args_schema_props={}, args_schema_required=[]),
+        CommandDef("skill", cmd_skill, "List/use skills", args_schema="[list|use <name>]", category="agent", args_schema_props={"<name>": "string"}, args_schema_required=[]),
+        CommandDef("add_skill", cmd_add_skill, "Add a new skill (name + content=...)", args_schema="<name>", category="agent", args_schema_props={}, args_schema_required=[]),
+        CommandDef("add_mcp", cmd_add_mcp, "Register an MCP server", args_schema="url=... [name=...]", category="agent", args_schema_props={}, args_schema_required=[]),
+        CommandDef("mcp", cmd_mcp, "List MCP servers", category="agent", args_schema_props={}, args_schema_required=[]),
         # Self-edit / diagnosis
         CommandDef("code_review", cmd_code_review, "Review and optionally fix code", args_schema="[target]", category="selfheal",
-                   aliases=["cr", "fixcodes"]),
-        CommandDef("bug_fix", cmd_bug_fix, "Describe a bug to fix", args_schema="<description>", category="selfheal"),
-        CommandDef("verify", cmd_verify, "Verify code correctness", args_schema="[target]", category="selfheal"),
-        CommandDef("simplify", cmd_simplify, "Simplify a module", args_schema="<file>", category="selfheal"),
-        CommandDef("check_ai", cmd_check_ai, "Agent self-check", category="selfheal"),
-        CommandDef("check_system", cmd_check_system, "Check engine code for syntax errors", category="selfheal"),
-        CommandDef("autopsy", cmd_autopsy, "Analyze trade journal for patterns", category="selfheal"),
-        CommandDef("diagnose", cmd_diagnose, "Diagnose a specific issue", args_schema="[description]", category="selfheal"),
-        CommandDef("team_spawn", cmd_team_spawn, "Spawn parallel sub-agents", args_schema="task1 task2 ...", category="selfheal"),
-        CommandDef("git_push", cmd_git_push, "Force-push verified code assets to GitHub (PAT + repo link)", args_schema="[message=...] [branch=main]", category="selfheal"),
+                   aliases=["cr", "fixcodes"], args_schema_props={"target": "string"}, args_schema_required=[]),
+        CommandDef("bug_fix", cmd_bug_fix, "Describe a bug to fix", args_schema="<description>", category="selfheal", args_schema_props={}, args_schema_required=[]),
+        CommandDef("verify", cmd_verify, "Verify code correctness", args_schema="[target]", category="selfheal", args_schema_props={"target": "string"}, args_schema_required=[]),
+        CommandDef("simplify", cmd_simplify, "Simplify a module", args_schema="<file>", category="selfheal", args_schema_props={}, args_schema_required=[]),
+        CommandDef("check_ai", cmd_check_ai, "Agent self-check", category="selfheal", args_schema_props={}, args_schema_required=[]),
+        CommandDef("check_system", cmd_check_system, "Check engine code for syntax errors", category="selfheal", args_schema_props={}, args_schema_required=[]),
+        CommandDef("autopsy", cmd_autopsy, "Analyze trade journal for patterns", category="selfheal", args_schema_props={}, args_schema_required=[]),
+        CommandDef("diagnose", cmd_diagnose, "Diagnose a specific issue", args_schema="[description]", category="selfheal", args_schema_props={"description": "string"}, args_schema_required=[]),
+        CommandDef("team_spawn", cmd_team_spawn, "Spawn parallel sub-agents", args_schema="task1 task2 ...", category="selfheal", args_schema_props={}, args_schema_required=[]),
+        CommandDef("git_push", cmd_git_push, "Force-push verified code assets to GitHub (PAT + repo link, args_schema_props={}, args_schema_required=[])", args_schema="[message=...] [branch=main]", category="selfheal"),
         # Engine
-        CommandDef("engine", cmd_engine, "Engine control", args_schema="[on|off|status]", category="engine"),
-        CommandDef("status", cmd_status, "Engine status", aliases=["s"], category="engine"),
-        CommandDef("autotrade", cmd_autotrade, "Toggle autotrade", args_schema="[on|off]", category="engine"),
-        CommandDef("scan", cmd_scan, "Scanner control", args_schema="[on|off|now]", category="engine"),
-        CommandDef("report", cmd_report, "Reporting control", args_schema="[on|off|interval N]", category="engine"),
-        CommandDef("pnl", cmd_pnl, "Show current PnL", aliases=["p"], category="engine"),
-        CommandDef("trades", cmd_trades_history, "Trade history", args_schema="[limit]", aliases=["trades_history"], category="engine"),
-        CommandDef("tpsl_history", cmd_tpsl_history, "TPSL history", args_schema="[limit]", category="engine"),
-        CommandDef("positions", cmd_positions, "Open positions", aliases=["pos", "positions_history"], category="engine"),
-        CommandDef("close", cmd_close, "Close a position", args_schema="<symbol> [position_id=...]", category="engine"),
-        CommandDef("settings", cmd_settings, "Show/update settings", args_schema="[key=value ...]", category="engine"),
-        CommandDef("settings trade", cmd_settings_trade, "Real-time trading config snapshot (leverage, symbols, PnL, price, scanner, TPSL zones)", category="engine", aliases=["settings_trade", "trade_settings"]),
-        CommandDef("leverage", cmd_leverage, "Get/set leverage", args_schema="[value] [symbol=...]", category="engine"),
-        CommandDef("symbols", cmd_symbols, "Get/set active symbols", args_schema="[SYM1 SYM2 ...]", category="engine"),
-        CommandDef("margin", cmd_margin, "Get/set margin mode", args_schema="[ISOLATION|ISOLATED|CROSS] [symbol=...]", category="engine"),
-        CommandDef("max_positions", cmd_max_positions, "Get/set max open positions cap", args_schema="<number>", category="engine"),
-        CommandDef("position_mode", cmd_position_mode, "Get/set account position mode (HEDGE/ONE_WAY)", args_schema="[HEDGE|ONE_WAY]", category="engine"),
-        CommandDef("reversal", cmd_reversal, "Reversal settings", args_schema="[true|false] [confidence=N]", category="engine"),
-        CommandDef("mid_management", cmd_mid_management, "Trigger mid-position management", args_schema="[symbol]", category="engine"),
+        CommandDef("engine", cmd_engine, "Engine control", args_schema="[on|off|status]", category="engine", args_schema_props={}, args_schema_required=[]),
+        CommandDef("status", cmd_status, "Engine status", aliases=["s"], category="engine", args_schema_props={}, args_schema_required=[]),
+        CommandDef("autotrade", cmd_autotrade, "Toggle autotrade", args_schema="[on|off]", category="engine", args_schema_props={}, args_schema_required=[]),
+        CommandDef("scan", cmd_scan, "Scanner control", args_schema="[on|off|now]", category="engine", args_schema_props={}, args_schema_required=[]),
+        CommandDef("report", cmd_report, "Reporting control", args_schema="[on|off|interval N]", category="engine", args_schema_props={"N": "string"}, args_schema_required=[]),
+        CommandDef("pnl", cmd_pnl, "Show current PnL", aliases=["p"], category="engine", args_schema_props={}, args_schema_required=[]),
+        CommandDef("trades", cmd_trades_history, "Trade history", args_schema="[limit]", aliases=["trades_history"], category="engine", args_schema_props={"limit": "string"}, args_schema_required=[]),
+        CommandDef("tpsl_history", cmd_tpsl_history, "TPSL history", args_schema="[limit]", category="engine", args_schema_props={"limit": "string"}, args_schema_required=[]),
+        CommandDef("positions", cmd_positions, "Open positions", aliases=["pos", "positions_history"], category="engine", args_schema_props={}, args_schema_required=[]),
+        CommandDef("close", cmd_close, "Close a position", args_schema="<symbol> [position_id=...]", category="engine", args_schema_props={}, args_schema_required=[]),
+        CommandDef("settings", cmd_settings, "Show/update settings", args_schema="[key=value ...]", category="engine", args_schema_props={"...": "string"}, args_schema_required=[]),
+        CommandDef("settings trade", cmd_settings_trade, "Real-time trading config snapshot (leverage, symbols, PnL, price, scanner, TPSL zones, args_schema_props={}, args_schema_required=[])", category="engine", aliases=["settings_trade", "trade_settings"]),
+        CommandDef("leverage", cmd_leverage, "Get/set leverage", args_schema="[value] [symbol=...]", category="engine", args_schema_props={"value": "string"}, args_schema_required=[]),
+        CommandDef("symbols", cmd_symbols, "Get/set active symbols", args_schema="[SYM1 SYM2 ...]", category="engine", args_schema_props={"SYM1": "string", "SYM2": "string", "...": "string"}, args_schema_required=[]),
+        CommandDef("margin", cmd_margin, "Get/set margin mode", args_schema="[ISOLATION|ISOLATED|CROSS] [symbol=...]", category="engine", args_schema_props={}, args_schema_required=[]),
+        CommandDef("max_positions", cmd_max_positions, "Get/set max open positions cap", args_schema="<number>", category="engine", args_schema_props={}, args_schema_required=[]),
+        CommandDef("position_mode", cmd_position_mode, "Get/set account position mode (HEDGE/ONE_WAY, args_schema_props={}, args_schema_required=[])", args_schema="[HEDGE|ONE_WAY]", category="engine"),
+        CommandDef("reversal", cmd_reversal, "Reversal settings", args_schema="[true|false] [confidence=N]", category="engine", args_schema_props={}, args_schema_required=[]),
+        CommandDef("mid_management", cmd_mid_management, "Trigger mid-position management", args_schema="[symbol]", category="engine", args_schema_props={"symbol": "string"}, args_schema_required=[]),
+        CommandDef("cancels", cmd_cancels, "Cancel pending orders", args_schema="[symbol]", category="engine", args_schema_props={"symbol": "string"}, args_schema_required=[]),
+        CommandDef("positions_history", cmd_positions_history, "Closed position history", args_schema="[symbol]", category="engine", args_schema_props={"symbol": "string"}, args_schema_required=[]),
+        CommandDef("guard_interval", cmd_guard, "Guard interval (s)", args_schema="[seconds]", category="engine", args_schema_props={"seconds": "string"}, args_schema_required=[]),
+        CommandDef("breakeven", cmd_breakeven, "Breakeven threshold (ROI %)", args_schema="[percent]", category="engine", args_schema_props={"percent": "string"}, args_schema_required=[]),
+        CommandDef("trailing", cmd_trailing, "Trailing trigger/distance (ROI %)", args_schema="[trigger%] [distance%]", category="engine", args_schema_props={"trigger%": "string", "distance%": "string"}, args_schema_required=[]),
+        CommandDef("liqdistance", cmd_lqdistance, "Liquidation SL distance %", args_schema="[percent]", category="engine", args_schema_props={"percent": "string"}, args_schema_required=[]),
     ]
 
     for c in cmds:

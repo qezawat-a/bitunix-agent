@@ -225,6 +225,26 @@ class Engine:
         self._executor._risk.max_daily_loss_pct = self._settings.max_daily_loss_pct
         return changed
 
+    async def _carry_existing_tp(self, symbol: str, position_id: str) -> tuple[str, str]:
+        """Read the position's existing TP from the pending-orders payload.
+
+        A missing tpPrice on modify is interpreted by some exchanges as
+        "clear the TP" — carrying it over is the only safe stop move.
+        Returns (tp_price, tp_stop_type), both "" when unknown.
+        """
+        try:
+            pending = await self._client.get_pending_tpsl_orders(symbol)
+        except Exception:
+            pending = []
+        for o in pending or []:
+            if str(o.get("positionId", "")) != str(position_id):
+                continue
+            tp = o.get("tpPrice") or o.get("takeProfit") or ""
+            st = o.get("tpStopType") or "LAST_PRICE"
+            if tp:
+                return str(tp), str(st)
+        return "", ""
+
     async def trigger_mid_management(self, symbol: str) -> str:
         """Manually trigger position mid-management: adjust SL to breakeven if profitable."""
         positions = await self._client.get_pending_positions(symbol)
@@ -238,13 +258,16 @@ class Engine:
             side = str(pos.get("side", ""))
             if not pid or not entry:
                 continue
-            if abs(pnl_pct) >= self._settings.breakeven_threshold_pct:
-                # Move SL to breakeven.
+            if pnl_pct >= self._settings.breakeven_threshold_pct:
+                # Move SL to breakeven (only when in profit).
                 be_price = entry
+                tp_price, tp_st = await self._carry_existing_tp(symbol, pid)
                 try:
                     await self._client.modify_position_tpsl_order(
                         position_id=pid,
                         symbol=symbol,
+                        tp_price=tp_price,
+                        tp_stop_type=tp_st,
                         sl_price=str(round(be_price, 4)),
                         sl_stop_type="MARK",
                     )
@@ -337,11 +360,14 @@ class Engine:
                     is_long = side in ("BUY", "LONG")
 
                     # (a) Breakeven: once ROI >= threshold, move SL to entry price.
-                    if abs(pnl_pct) >= be_threshold and pid not in self._breakeven_done:
+                    if pnl_pct >= be_threshold and pid not in self._breakeven_done:
+                        tp_price, tp_st = await self._carry_existing_tp(symbol, pid)
                         try:
                             await self._client.modify_position_tpsl_order(
                                 position_id=pid,
                                 symbol=symbol,
+                                tp_price=tp_price,
+                                tp_stop_type=tp_st,
                                 sl_price=str(round(entry, 4)),
                                 sl_stop_type="LAST_PRICE",
                             )
@@ -357,8 +383,9 @@ class Engine:
                             )
                         continue
 
-                    # (b) Trailing: once ROI >= trail_roi, trail the stop.
-                    if abs(pnl_pct) >= trail_roi:
+                    # (b) Trailing: once ROI >= trail_roi, trail the stop with a
+                    # separate trailing distance (never use the trigger as the gap).
+                    if pnl_pct >= trail_roi:
                         try:
                             tickers = await self._client.get_tickers(symbol)
                             ticker = tickers[0] if isinstance(tickers, list) and tickers else tickers
@@ -366,21 +393,25 @@ class Engine:
                         except Exception:
                             cur = entry
 
+                        trail_dist = getattr(self._settings, "trailing_distance_pct", 2.0)
                         if is_long:
-                            sl_price = cur * (1 - trail_roi / 100.0)
+                            sl_price = cur * (1 - trail_dist / 100.0)
                             existing_sl = float(pos.get("stopPrice") or pos.get("slPrice") or 0)
                             if existing_sl and sl_price <= existing_sl:
                                 continue
                         else:
-                            sl_price = cur * (1 + trail_roi / 100.0)
+                            sl_price = cur * (1 + trail_dist / 100.0)
                             existing_sl = float(pos.get("stopPrice") or pos.get("slPrice") or 0)
                             if existing_sl and sl_price >= existing_sl:
                                 continue
 
+                        tp_price, tp_st = await self._carry_existing_tp(symbol, pid)
                         try:
                             await self._client.modify_position_tpsl_order(
                                 position_id=pid,
                                 symbol=symbol,
+                                tp_price=tp_price,
+                                tp_stop_type=tp_st,
                                 sl_price=str(round(sl_price, 4)),
                                 sl_stop_type="LAST_PRICE",
                             )
@@ -394,7 +425,7 @@ class Engine:
             except Exception as e:
                 log.error("trailing loop error: %s", e)
 
-            await asyncio.sleep(self._settings.report_interval_sec)
+            await asyncio.sleep(getattr(self._settings, "guard_interval_sec", self._settings.report_interval_sec))
 
     # ------------------------------------------------------------------ #
     # Internal                                                            #

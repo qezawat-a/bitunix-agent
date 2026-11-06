@@ -33,6 +33,8 @@ class CommandDef:
     aliases: list[str] = field(default_factory=list)
     args_schema: str = ""   # e.g. "[symbol] [leverage]"
     category: str = "general"
+    args_schema_props: dict = field(default_factory=dict)  # name -> JSON type
+    args_schema_required: list = field(default_factory=list)
 
 
 class CommandRegistry:
@@ -133,6 +135,36 @@ class CommandRegistry:
             return CommandResult(False, "", error=f"/{cmd_name} failed: {e}")
 
         return result
+
+
+    def tool_schema(self) -> list[dict]:
+        """OpenAI function-calling schemas derived from the command registry.
+
+        Real tool calls only work when the provider receives callable tool
+        definitions. Deriving them from the live registry keeps the command
+        surface and the callable surface identical by construction: every
+        slash command is exactly one tool, and no tool exists without a
+        command behind it.
+        """
+        tools: list[dict] = []
+        for d in self.all_defs():
+            props: dict[str, dict] = {}
+            for k, v in d.args_schema_props.items():
+                props[k] = {"type": v, "description": ""}
+            tools.append({
+                "type": "function",
+                "function": {
+                    "name": d.name,
+                    "description": d.help_text,
+                    "parameters": {
+                        "type": "object",
+                        "properties": props,
+                        "required": [] if not d.args_schema_required else d.args_schema_required,
+                        "additionalProperties": False,
+                    },
+                },
+            })
+        return tools
 
     def help_text(self, category: Optional[str] = None) -> str:
         cats: dict[str, list[CommandDef]] = {}

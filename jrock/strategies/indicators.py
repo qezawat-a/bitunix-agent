@@ -133,6 +133,68 @@ def vwap(
         return np.where(cum_vol > 0, cum_tpv / cum_vol, np.nan)
 
 
+def momentum(src: list | Array, period: int = 14) -> Array:
+    """Price momentum: close - close[period]."""
+    a = _arr(src)
+    out = np.full(len(a), np.nan)
+    if len(a) > period:
+        out[period:] = a[period:] - a[:-period]
+    return out
+
+
+def atr_breakout(
+    high: list | Array, low: list | Array, close: list | Array, period: int = 14
+) -> tuple[Array, Array]:
+    """ATR breakout levels: (close > prev high + atr, close < prev low - atr) flags."""
+    h, l, c = _arr(high), _arr(low), _arr(close)
+    a = atr(h, l, c, period)
+    n = len(h)
+    up = np.zeros(n, dtype=bool)
+    dn = np.zeros(n, dtype=bool)
+    for i in range(1, n):
+        if np.isnan(a[i]) or np.isnan(a[i - 1]):
+            continue
+        up[i] = c[i] > h[i - 1] + a[i - 1]
+        dn[i] = c[i] < l[i - 1] - a[i - 1]
+    return up, dn
+
+
+def supertrend(
+    high: list | Array, low: list | Array, close: list | Array,
+    period: int = 10, multiplier: float = 3.0,
+) -> tuple[Array, Array]:
+    """Supertrend: (trend direction +1/-1, supertrend line)."""
+    h, l, c = _arr(high), _arr(low), _arr(close)
+    n = len(h)
+    a = atr(h, l, c, period)
+    basic_ub = (h + l) / 2 + multiplier * a
+    basic_lb = (h + l) / 2 - multiplier * a
+    final_ub = np.full(n, np.nan)
+    final_lb = np.full(n, np.nan)
+    st = np.full(n, np.nan)
+    trend = np.zeros(n, dtype=int)
+    for i in range(n):
+        if np.isnan(a[i]):
+            continue
+        if i == 0 or np.isnan(final_ub[i-1]):
+            final_ub[i] = basic_ub[i]
+            final_lb[i] = basic_lb[i]
+        else:
+            final_ub[i] = basic_ub[i] if (basic_ub[i] < final_ub[i-1] or c[i-1] > final_ub[i-1]) else final_ub[i-1]
+            final_lb[i] = basic_lb[i] if (basic_lb[i] > final_lb[i-1] or c[i-1] < final_lb[i-1]) else final_lb[i-1]
+        prev = trend[i - 1] if i else -1
+        if prev <= 0 and c[i] <= final_ub[i]:
+            trend[i] = -1
+            st[i] = final_ub[i]
+        elif prev >= 0 and c[i] >= final_lb[i]:
+            trend[i] = 1
+            st[i] = final_lb[i]
+        else:
+            trend[i] = prev
+            st[i] = final_ub[i] if prev == -1 else final_lb[i]
+    return trend, st
+
+
 def atr(
     high: list | Array,
     low: list | Array,

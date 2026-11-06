@@ -15,6 +15,9 @@ from typing import AsyncIterator, Optional
 
 import httpx
 
+# Hard ceiling on tool turns per message so a misbehaving model can't loop.
+MAX_TOOL_TURNS = 12
+
 log = logging.getLogger(__name__)
 
 ANTHROPIC_BASE = "https://api.anthropic.com"
@@ -42,6 +45,7 @@ class LLMConfig:
     system_prompt: str = ""
     timeout: float = 120.0
     max_retries: int = 3
+    tool_timeout: float = 30.0  # single raw completion for a tool turn
 
     @classmethod
     def from_env(cls) -> "LLMConfig":
@@ -88,6 +92,109 @@ class LLMClient:
                                        max_tokens=max_tokens, temperature=temperature):
             chunks.append(chunk)
         return "".join(chunks)
+
+    async def complete_raw(
+        self,
+        messages: list[dict],
+        *,
+        system: str = "",
+        tools: Optional[list[dict]] = None,
+        max_tokens: Optional[int] = None,
+        temperature: Optional[float] = None,
+    ) -> dict:
+        """Raw completion returning the full provider JSON (non-streaming).
+
+        Unlike stream(), this never hides tool_calls inside delta chunks: the
+        OpenAI-compatible response keeps ``choices[0].message.tool_calls``
+        (id + function.name + function.arguments) verbatim, and the Anthropic
+        response keeps its ``content`` blocks (incl. ``tool_use``). The runtime
+        uses this for real tool calling.
+        """
+        cfg = self._config
+        is_anthropic = (
+            cfg.provider == "anthropic"
+        )
+        if is_anthropic:
+            return await self._complete_raw_anthropic(
+                messages, system=system,
+                max_tokens=max_tokens or cfg.max_tokens,
+                temperature=temperature if temperature is not None else cfg.temperature,
+            )
+        else:
+            return await self._complete_raw_openai(
+                messages, system=system, tools=tools,
+                max_tokens=max_tokens or cfg.max_tokens,
+                temperature=temperature if temperature is not None else cfg.temperature,
+            )
+
+    async def _complete_raw_openai(
+        self,
+        messages: list[dict],
+        *,
+        system: str,
+        tools: Optional[list[dict]],
+        max_tokens: int,
+        temperature: float,
+    ) -> dict:
+        base = self._config.base_url or "https://api.openai.com"
+        url = base.rstrip("/") + "/v1/chat/completions"
+        headers = {
+            "Authorization": f"Bearer {self._config.api_key}",
+            "Content-Type": "application/json",
+        }
+        all_messages = []
+        if system:
+            all_messages.append({"role": "system", "content": system})
+        all_messages.extend(messages)
+        body: dict = {
+            "model": self._config.model_id,
+            "messages": all_messages,
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+            "stream": False,
+        }
+        if tools:
+            body["tools"] = tools
+            body["tool_choice"] = "auto"
+        http = httpx.AsyncClient(timeout=self._config.tool_timeout)
+        try:
+            resp = await http.post(url, headers=headers, json=body)
+            resp.raise_for_status()
+            return resp.json()
+        finally:
+            await http.aclose()
+
+    async def _complete_raw_anthropic(
+        self,
+        messages: list[dict],
+        *,
+        system: str,
+        max_tokens: int,
+        temperature: float,
+    ) -> dict:
+        base = self._config.base_url or ANTHROPIC_BASE
+        url = base.rstrip("/") + "/v1/messages"
+        headers = {
+            "x-api-key": self._config.api_key,
+            "anthropic-version": ANTHROPIC_VERSION,
+            "content-type": "application/json",
+        }
+        body: dict = {
+            "model": self._config.model_id or "claude-sonnet-4-5",
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+            "messages": messages,
+            "stream": False,
+        }
+        if system:
+            body["system"] = system
+        http = httpx.AsyncClient(timeout=self._config.tool_timeout)
+        try:
+            resp = await http.post(url, headers=headers, json=body)
+            resp.raise_for_status()
+            return resp.json()
+        finally:
+            await http.aclose()
 
     async def stream(
         self,
