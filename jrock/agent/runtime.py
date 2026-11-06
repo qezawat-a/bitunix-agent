@@ -3,20 +3,26 @@
 The runtime:
 1. Receives user messages from bots or CLI.
 2. Parses commands and dispatches via the registry.
-3. Falls back to the LLM for conversational input.
+3. Falls back to the LLM for conversational input only — never for mutations.
 4. Can read/write its own source files (with confirmation gate).
 5. Maintains conversation history and memory.
 
-Honesty guarantee: the agent never fabricates exchange data. When it doesn't
-know something, say so. Uncertainty is always explicit.
+Honesty guarantee: the agent never fabricates exchange data and never claims
+a state change it did not execute. Mutations are deterministic (intent router
+→ registry); every dispatch is verified by a state-diff; fabricated values
+(balances, PnL, positions, models) are detected against live engine state.
+When it doesn't know something, say so. Uncertainty is always explicit.
 """
 from __future__ import annotations
 
 import asyncio
+import copy
+import dataclasses
 import difflib
 import json
 import logging
 import os
+import re
 import subprocess
 import sys
 import time
@@ -62,30 +68,79 @@ Be direct, precise, and professional. Take action — don't just suggest it.
 """
 
 # Natural-language config intents routed to real commands.
-# Flexible matching: single tokens match anywhere, multi-word phrases match
-# as substrings. Singular/plural variants covered by separate entries.
+# Broadened: bare "risk" routes to risk_per_trade_pct, "margin" to margin_mode,
+# "position" to position_mode. Negation is explicit so "don't set X" never fires.
 _CONFIG_INTENT_PATTERNS: list[tuple[tuple[str, ...], str]] = [
     # risk per trade
-    (("risk per trade", "riesgo por operacion", "riesgo por operación", "riesgo por trade", "risk trade"), "risk_per_trade_pct"),
+    (("risk per trade", "risk", "riesgo", "riesgo por operacion", "riesgo por operación", "riesgo por trade", "risk trade"), "risk_per_trade_pct"),
     # leverage
-    (("leverage", "apalancamiento", "lever"), "leverage"),
+    (("leverage", "lever", "apalancamiento", "x leverage"), "leverage"),
     # max open positions / max positions / max position
-    (("max open positions", "max open position", "max positions", "max position", "maxopenpositions", "max_open_positions"), "max_open_positions"),
+    (("max open positions", "max open position", "max positions", "max position", "maxopenpositions", "max_open_positions", "max positions", "open positions"), "max_open_positions"),
     # margin mode
-    (("margin mode", "modo margen", "modo de margen", "cross margin", "isolated margin"), "margin_mode"),
+    (("margin mode", "margin", "modo margen", "modo de margen", "cross margin", "isolated margin"), "margin_mode"),
     # position mode
-    (("position mode", "modo posicion", "modo de posición", "hedge mode", "one way mode"), "position_mode"),
+    (("position mode", "position", "modo posicion", "modo de posición", "hedge mode", "one way mode"), "position_mode"),
     # min confidence
-    (("min confidence", "confianza minima", "confianza mínima", "minimum confidence"), "min_confidence"),
+    (("min confidence", "min_confidence", "confianza minima", "confianza mínima", "minimum confidence"), "min_confidence"),
     # scan interval
-    (("scan interval", "intervalo de escaneo", "scan interval sec"), "scan_interval_sec"),
+    (("scan interval", "scan_interval_sec", "intervalo de escaneo", "scan interval sec"), "scan_interval_sec"),
     # daily loss
-    (("daily loss", "perdida diaria", "pérdida diaria", "max daily loss"), "max_daily_loss_pct"),
+    (("daily loss", "max_daily_loss_pct", "perdida diaria", "pérdida diaria", "max daily loss"), "max_daily_loss_pct"),
     # balance / pnl
     (("balance", "balanceo", "show me the balance", "pnl", "profit", "loss", "equity"), "pnl"),
     # soul
     (("soul", "persona", "set the soul", "switch soul", "change soul"), "soul"),
 ]
+
+_NEGATION_PATTERNS = (
+    "don't", "dont", "do not", "dont", "not ", "never", "no ", "stop",
+    "cancel", "revert", "undo", "pause when",
+    "no pongas", "no poner", "no cambies", "no cambiar", "deja de",
+    "para de", "detener", "cancela", "revertir",
+)
+
+# Words that, WITHOUT a setting name, still signal a desired mutation —
+# so the agent never hallucinates a change it could not parse.
+_BARE_MUTATION_PATTERNS = (
+    "set ", "set to", "change ", "update ", "switch ", "turn on", "turn off",
+    "enable ", "disable ", "put it ", "make it ", "adjust ",
+    "pon ", "cambia", "actualiza", "activa", "desactiva", "ajusta",
+    "increase ", "decrease ", "raise ", "lower ",
+)
+
+# Tokens meaning "no mutation requested".
+_NOOP_PATTERNS = (
+    " what is ", " what if ", " how does ", " why ", " explain",
+    " tell me about ", " help me understand ", " describe ",
+)
+
+# Regexes for fabricated numeric claims: "now 20%", "$5,200", "is 42".
+_AMOUNT_RE = re.compile(r"\$?\s?\d[\d,]*(?:\.\d+)?\s?(?:%|usd|usdt|x)?", re.I)
+_PERCENT_RE = re.compile(r"\d+(?:\.\d+)?\s?%", re.I)
+_PNL_RE = re.compile(r"(?:balance|pnl|equity|profit)[^\n]{0,40}\$?\s?-?\d[\d,]*(?:\.\d+)?", re.I)
+
+# Broader claim markers (catches "Done!", "All set", "Margin updated")
+_CLAIM_MARKERS = (
+    "set to", "changed to", "updated to", "has been set", "is now set",
+    "i've set", "i have set", "saved", "applied", "configurado",
+    "actualizado", "he cambiado", "he establecido",
+    "done!", "done.", "all set", "all done", "is now", "now at", "now ",
+    "now 20", "now 10", "set the ", "change applied", "update applied",
+    "configured", "successfully", "fixed!", "your risk", "your margin",
+    "your leverage", "your position", "your balance", "positions open",
+    "trading is now", "switched to", "enabled", "disabled", "activated",
+    "updated", "updated.", "updated!", " update",
+)
+
+_NUM_WORDS = {"one": 1, "two": 2, "three": 3, "four": 4, "five": 5}
+
+
+def _normalize(s: str) -> str:
+    """Lowercase + normalize accents/punctuation for intent matching."""
+    s = s.lower().strip()
+    s = s.replace("ó", "o").replace("á", "a").replace("é", "e").replace("í", "i").replace("ú", "u").replace("ñ", "n")
+    return s
 class SimpleMemory:
     def __init__(self) -> None:
         self._store: dict[str, str] = {}
@@ -118,6 +173,8 @@ class SimpleMemory:
                 self._store = json.loads(MEMORY_FILE.read_text(encoding="utf-8"))
         except Exception:
             self._store = {}
+
+
 class AgentRuntime:
     def __init__(
         self,
@@ -213,47 +270,69 @@ class AgentRuntime:
             parts.append("\n**Your memory:**\n" + "\n".join(f"- {m['key']}: {m['value']}" for m in mem[:20]))
         settings = self.engine._settings
         parts.append(
-            f"\n**Current engine state:**\n"
+            f"\n**Current engine state (read from live settings, not invented):**\n"
             f"- Symbols: {settings.symbols}\n"
             f"- Leverage: {settings.leverage}x\n"
+            f"- Margin: {settings.margin_mode}, Position: {settings.position_mode}\n"
+            f"- Risk per trade: {settings.risk_per_trade_pct}%\n"
+            f"- Max open positions: {settings.max_open_positions}\n"
             f"- Autotrade: {'ON' if settings.autotrade_enabled else 'OFF'}\n"
             f"- Scanner: {'ON' if settings.scan_enabled else 'OFF'}\n"
+            f"- Model: {settings.model_id or '(none set)'}\n"
         )
         return "\n\n".join(parts)
 
     async def handle(self, text: str) -> AsyncIterator[str]:
-        """Main entry point. Yields text chunks for streaming output."""
+        """Main entry point. Yields text chunks for streaming output.
+
+        Order of operations (deterministic, verifiable):
+          1. Slash commands → registry (state diff verified).
+          2. Mutation intent → intent router → registry (state diff verified).
+          3. Bare mutation intent with no parseable value → clarify, never LLM.
+          4. Only then: converse with the LLM, filtered by honesty + fabrication guards.
+        """
         text = text.strip()
         if not text:
             return
 
-        # Commands go to the registry.
+        # 1. Slash commands go to the registry.
         if text.startswith("/"):
+            before = self._snapshot_settings()
             result = await self.registry.dispatch(
                 text, engine=self.engine, agent=self, registry=self.registry
             )
-            if result.ok:
-                yield result.text or "Done."
-            else:
-                yield f"Error: {result.error}"
+            yield self._render_dispatch_result(
+                text, result, before, auto_executed=False
+            )
             return
 
-        # Natural-language config requests route to real commands so the
-        # change is actually executed instead of hallucinated by the LLM.
+        # 2. Natural-language mutation intent → real command execution.
         routed = self._route_config_intent(text)
         if routed is not None:
-            cmd, note = routed
+            cmd, note, negation = routed
+            header = f"[auto-executed as `{cmd}`]"
+            if negation:
+                yield header + "\n⚠️ Action NOT taken — your message read as a negation/no-op. No state was changed."
+                return
+            before = self._snapshot_settings()
             result = await self.registry.dispatch(
                 cmd, engine=self.engine, agent=self, registry=self.registry
             )
-            header = f"[auto-executed as `{cmd}`]\n"
-            if result.ok:
-                yield header + (result.text or "Done.") + note
-            else:
-                yield header + f"Error: {result.error}"
+            rendered = self._render_dispatch_result(cmd, result, before, auto_executed=True)
+            yield rendered + note
             return
 
-        # Conversation goes to the LLM.
+        # 3. The user asked for a mutation but we couldn't parse an exact value.
+        #    Never hand this to the LLM — it would hallucinate the change.
+        if self._looks_like_mutation(text):
+            yield (
+                "I can't safely map that to a concrete setting change, and I won't guess. "
+                "Please use the exact command, e.g. `/settings risk_per_trade_pct=20`, "
+                "`/leverage 10`, `/margin CROSS`. No state was changed."
+            )
+            return
+
+        # 4. Pure conversation: hand to the LLM, then verify its output.
         self._history.append({"role": "user", "content": text})
         system = self._build_system_prompt()
         messages = self._history[-20:]
@@ -271,62 +350,139 @@ class AgentRuntime:
         full_reply = "".join(reply_chunks)
         self._history.append({"role": "assistant", "content": full_reply})
 
-        # Honesty guard: if the LLM claims a state change it cannot have made
-        # (it has no execution ability), append a factual correction.
+        # Guards: (a) LLM claims a mutation → correct it; (b) LLM fabricates
+        # balances/PnL/positions → correct against live engine state.
         correction = self._honesty_correction(full_reply)
         if correction:
             self._history.append({"role": "assistant", "content": correction})
             yield "\n\n" + correction
 
     # ------------------------------------------------------------------ #
+    # State snapshot / verification                                       #
+    # ------------------------------------------------------------------ #
+
+    def _snapshot_settings(self) -> dict:
+        """Deep copy of current settings for before/after diffing."""
+        try:
+            return copy.deepcopy(dataclasses.asdict(self.engine._settings))
+        except Exception:
+            return {}
+
+    def _settings_diff(self, before: dict) -> dict:
+        """Return {key: (before, after)} for fields that changed."""
+        try:
+            after = dataclasses.asdict(self.engine._settings)
+        except Exception:
+            return {}
+        diff = {}
+        for k in set(list(before.keys()) + list(after.keys())):
+            b, a = before.get(k), after.get(k)
+            if b != a:
+                diff[k] = (b, a)
+        return diff
+
+    def _expected_dispatch_diff(self, cmd: str, result) -> dict:
+        """Fields the user asked us to change, extracted from the command syntax."""
+        expected = {}
+        # /settings key=value
+        for m in re.finditer(r"(\w+)=([^\s]+)", cmd):
+            expected[m.group(1)] = m.group(2)
+        # /leverage 10, /max_positions 3
+        parts = cmd.split()
+        if len(parts) >= 2 and parts[0].lower() in ("/leverage", "/max_positions", "/margin", "/position_mode"):
+            expected[parts[0].lstrip("/")] = parts[1]
+        return expected
+
+    def _verify_dispatch(self, cmd: str, result, before: dict) -> Optional[str]:
+        """Verify a dispatch actually mutated state. Returns a warning or None.
+
+        - If the handler reported failure → always warn.
+        - If the handler reported success but the expected fields didn't change
+          → warn (this is the 'told me done but didn't do it' case).
+        """
+        after = self._snapshot_settings()
+        diff = self._settings_diff(before)
+        if not result.ok:
+            return f"⚠️ Command reported an error: {result.error}"
+        expected = self._expected_dispatch_diff(cmd, result)
+        if not expected:
+            return None  # No expected mutation (e.g. /pnl) — nothing to verify.
+        missing = [k for k in expected if k not in diff]
+        # Accept aliased keys (max_positions → max_open_positions etc.)
+        aliases = {"max_positions": "max_open_positions"}
+        still_missing = []
+        for k in missing:
+            real = aliases.get(k, k)
+            if real not in diff:
+                still_missing.append(k)
+        if still_missing:
+            return (
+                f"⚠️ Verification failed: command reported success but these fields "
+                f"did not change — {', '.join(still_missing)}. Values are unchanged: "
+                f"{ {k: before.get(k) for k in still_missing} }."
+            )
+        return None
+
+    def _render_dispatch_result(self, cmd: str, result, before: dict, *, auto_executed: bool) -> str:
+        header = f"[auto-executed as `{cmd}`]\n" if auto_executed else ""
+        verification = self._verify_dispatch(cmd, result, before)
+        if result.ok:
+            body = result.text or "Done."
+        else:
+            body = f"Error: {result.error}"
+        out = header + body
+        if verification:
+            out += f"\n\n{verification}"
+        return out
+
+    # ------------------------------------------------------------------ #
     # Intent routing & honesty guard                                      #
     # ------------------------------------------------------------------ #
 
-    def _route_config_intent(self, text: str) -> Optional[tuple[str, str]]:
-        """Match short natural-language config requests to a real command.
+    def _route_config_intent(self, text: str) -> Optional[tuple[str, str, bool]]:
+        """Match natural-language config requests to a real command.
 
-        Returns (command, note) or None. Deliberately strict: the request must
-        name exactly one known setting and contain a number or mode token.
+        Returns (command, note, negation) or None. No length/newline cap —
+        normalization handles punctuation; negation blocks execution; unknown
+        values fall through to _looks_like_mutation()/clarify, never the LLM.
         """
-        if len(text) > 120 or "\n" in text:
-            return None
-        lowered = text.lower().strip().rstrip(".:!")
+        lowered = _normalize(text)
         settings = self.engine._settings
+        is_negation = any(n in lowered for n in _NEGATION_PATTERNS)
 
         for phrases, key in _CONFIG_INTENT_PATTERNS:
             if not any(p in lowered for p in phrases):
                 continue
-            # Extract the value: trailing number, or mode word.
-            tokens = lowered.replace(":", " ").split()
+            # Extract the value: first number found, or a mode word.
+            tokens = re.split(r"[:,\s]+", lowered)
             value: Optional[str] = None
-            for t in reversed(tokens):
+            for t in tokens:
+                clean = t.rstrip("%x").rstrip("x")
                 try:
-                    float(t.rstrip("%x"))
-                    value = t.rstrip("%x")
+                    float(clean)
+                    value = clean
                     break
                 except ValueError:
+                    if clean in _NUM_WORDS:
+                        value = str(_NUM_WORDS[clean])
+                        break
                     continue
             if value is None:
-                mode_words = ("cross", "isolated", "cruzado", "aislado", "hedge", "one_way", "oneway")
-                for t in reversed(tokens):
+                mode_words = ("cross", "isolated", "isolation", "cruzado", "aislado", "hedge", "one_way", "oneway", "one", "way")
+                for t in tokens:
                     if t in mode_words:
-                        value = {"cruzado": "CROSS", "aislado": "isolated"}.get(t, t.upper())
-                        if value == "ISOLATED" or value == "isolated":
-                            value = "ISOLATION" if key == "margin_mode" else "ISOLATED"
+                        value = t.upper()
+                        if key == "margin_mode" and value in ("ISOLATED", "ISOLATION", "AISLADO"):
+                            value = "ISOLATION"
                         break
             if value is None:
                 # Special intents that don't need a value: pnl, soul
                 if key == "pnl":
-                    return "/pnl", ""
+                    return "/pnl", "", is_negation
                 if key == "soul":
-                    # Try to extract soul name from text
-                    soul_names = list(self.engine._settings.__class__.__dict__.keys())  # placeholder
-                    # Use available souls from the agent
                     available = self._souls.keys()
                     matched_soul = None
-                    lowered_text = lowered
                     for soul_name in available:
-                        # Match by exact name, or with spaces removed, or underscores removed
                         variants = {
                             soul_name,
                             soul_name.replace("_", ""),
@@ -334,15 +490,14 @@ class AgentRuntime:
                             soul_name.split("_")[0] if "_" in soul_name else soul_name,
                         }
                         for v in variants:
-                            if v in lowered_text:
+                            if v in lowered:
                                 matched_soul = soul_name
                                 break
                         if matched_soul:
                             break
                     if matched_soul:
-                        return f"/soul switch {matched_soul}", ""
-                    # No specific soul named, just list them
-                    return "/soul list", ""
+                        return f"/soul switch {matched_soul}", "", is_negation
+                    return "/soul list", "", is_negation
                 return None
 
             if key == "margin_mode":
@@ -363,35 +518,89 @@ class AgentRuntime:
             else:
                 cmd = f"/settings {key}={value}"
                 note = ""
-            return cmd, note
+            return cmd, note, is_negation
+        return None
+
+    def _looks_like_mutation(self, text: str) -> bool:
+        """True if the user clearly wants a state change we couldn't parse."""
+        lowered = _normalize(text)
+        # Conversational / noop intros are safe for the LLM.
+        if any(p in lowered for p in _NOOP_PATTERNS):
+            return False
+        if any(p in lowered for p in _BARE_MUTATION_PATTERNS):
+            return True
+        # Any known setting name + any number still counts as a mutation ask.
+        for phrases, _ in _CONFIG_INTENT_PATTERNS:
+            if any(p in lowered for p in phrases):
+                return True
+        return False
 
     def _honesty_correction(self, reply: str) -> Optional[str]:
-        """Detect LLM claims of state changes it cannot execute, and correct them.
+        """Detect LLM claims the conversational layer cannot back up, correct them.
 
-        The conversational LLM has no execution ability — only slash commands
-        mutate state. Any claim that a setting was changed/applied/saved is a
-        fabrication and gets a factual correction appended.
+        Two independent checks:
+          (a) State-change fabrication — the LLM has no execution ability; only
+              the deterministic router/registry mutate state. Any claim of a
+              completed change is a lie unless it phrases a slash command as
+              the action to take.
+          (b) Fabricated numeric data — balances, PnL, positions, or model ids
+              invented by the LLM are caught by re-checking live engine state.
         """
         lowered = reply.lower()
-        claim_markers = (
-            "set to", "changed to", "updated to", "has been set", "is now set",
-            "i've set", "i have set", "saved", "applied", "configurado",
-            "actualizado", "he cambiado", "he establecido",
-        )
-        if not any(m in lowered for m in claim_markers):
-            return None
-        # Exception: the reply itself recommends the slash command.
-        if "/settings" in reply or "/leverage" in reply or "/margin" in reply:
-            return None
         settings = self.engine._settings
+
+        # (a) State-change fabrication — broader markers than before ("Done!",
+        #     "All set", "is now at", "switched to", "enabled", …).
+        if any(m in lowered for m in _CLAIM_MARKERS) or _PNL_RE.search(reply):
+            # Exception: the reply itself recommends a slash command as the
+            # action — that's guidance, not a fabrication claim.
+            if not any(c in reply for c in ("/settings", "/leverage", "/margin", "/position_mode")):
+                return (
+                    "⚠️ Correction: no setting has been changed by that reply — this agent's "
+                    "conversation layer cannot execute anything. Current values: risk per trade "
+                    f"{settings.risk_per_trade_pct}%, leverage {settings.leverage}x, margin "
+                    f"{settings.margin_mode}, max open positions {settings.max_open_positions}, "
+                    f"autotrade {'ON' if settings.autotrade_enabled else 'OFF'}. To apply a "
+                    "change, run the slash command (e.g. /settings risk_per_trade_pct=20); "
+                    "commands are executed and verified by the runtime."
+                )
+
+        # (b) Fabricated numeric claims — amounts/balances/PnL that don't match
+        #     anything we can verify in live state.
+        correction = self._fabricated_data_correction(reply)
+        if correction:
+            return correction
+        return None
+
+    def _fabricated_data_correction(self, reply: str) -> Optional[str]:
+        """Catch invented numbers (balances, PnL, positions, models).
+
+        The conversational LLM has no access to live exchange state, so any
+        specific balance/PnL/position count it states is fabricated unless it
+        came from a verified command result (which never enters this path).
+        """
+        # Model-id style fabrications: long hex / versioned ids with no source.
+        if re.search(r"\b(?:gpt|claude|gemini|llama|qwen|mistral|deepseek|phi)-[a-z0-9.\-]{4,}", reply, re.I):
+            return (
+                "⚠️ Correction: that model name was not verified against any provider. "
+                "Run `/models` to discover working models for your configured key."
+            )
+
+        fabricated = None
+        m = _PNL_RE.search(reply)
+        if m:
+            fabricated = m.group(0)
+        if fabricated is None and _PERCENT_RE.search(reply):
+            # A percentage change claim without any command backing it is suspect.
+            fabricated = _PERCENT_RE.search(reply).group(0)
+        if fabricated is None and re.search(r"\b\d+\s+positions?\s+open", reply, re.I):
+            fabricated = re.search(r"\d+\s+positions?\s+open", reply, re.I).group(0)
+        if fabricated is None:
+            return None
         return (
-            "⚠️ Correction: no setting has been changed by that reply — this agent's "
-            "conversation layer cannot execute anything. Current values: risk per trade "
-            f"{settings.risk_per_trade_pct}%, leverage {settings.leverage}x, margin "
-            f"{settings.margin_mode}, autotrade "
-            f"{'ON' if settings.autotrade_enabled else 'OFF'}. To apply a change, run the "
-            "slash command (e.g. /settings risk_per_trade_pct=20); commands are executed "
-            "and verified by the runtime."
+            "⚠️ Correction: I cannot verify a live figure like that from conversation — "
+            f"`{fabricated}` was not backed by any command. Run `/pnl` or `/status` for "
+            "real exchange data; I never invent balances, PnL, or position counts."
         )
 
     async def think(self, prompt: str) -> str:
