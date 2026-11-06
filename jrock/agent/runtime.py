@@ -13,6 +13,7 @@ know something, say so. Uncertainty is always explicit.
 from __future__ import annotations
 
 import asyncio
+import difflib
 import json
 import logging
 import os
@@ -80,6 +81,10 @@ _CONFIG_INTENT_PATTERNS: list[tuple[tuple[str, ...], str]] = [
     (("scan interval", "intervalo de escaneo", "scan interval sec"), "scan_interval_sec"),
     # daily loss
     (("daily loss", "perdida diaria", "pérdida diaria", "max daily loss"), "max_daily_loss_pct"),
+    # balance / pnl
+    (("balance", "balanceo", "show me the balance", "pnl", "profit", "loss", "equity"), "pnl"),
+    # soul
+    (("soul", "persona", "set the soul", "switch soul", "change soul"), "soul"),
 ]
 class SimpleMemory:
     def __init__(self) -> None:
@@ -145,8 +150,18 @@ class AgentRuntime:
         return list(self._souls.keys())
 
     def switch_soul(self, name: str) -> bool:
+        name = name.lower().strip()
         if name in self._souls:
             self.soul_name = name
+            return True
+        # Fuzzy match: normalize separators and find closest
+        normalized = name.replace("_", "").replace("-", "").replace(" ", "")
+        candidates = {}
+        for soul_name in self._souls:
+            candidates[soul_name.replace("_", "").replace("-", "").replace(" ", "")] = soul_name
+        matches = difflib.get_close_matches(normalized, candidates.keys(), n=1, cutoff=0.7)
+        if matches:
+            self.soul_name = candidates[matches[0]]
             return True
         return False
 
@@ -300,6 +315,34 @@ class AgentRuntime:
                             value = "ISOLATION" if key == "margin_mode" else "ISOLATED"
                         break
             if value is None:
+                # Special intents that don't need a value: pnl, soul
+                if key == "pnl":
+                    return "/pnl", ""
+                if key == "soul":
+                    # Try to extract soul name from text
+                    soul_names = list(self.engine._settings.__class__.__dict__.keys())  # placeholder
+                    # Use available souls from the agent
+                    available = self._souls.keys()
+                    matched_soul = None
+                    lowered_text = lowered
+                    for soul_name in available:
+                        # Match by exact name, or with spaces removed, or underscores removed
+                        variants = {
+                            soul_name,
+                            soul_name.replace("_", ""),
+                            soul_name.replace("_", " "),
+                            soul_name.split("_")[0] if "_" in soul_name else soul_name,
+                        }
+                        for v in variants:
+                            if v in lowered_text:
+                                matched_soul = soul_name
+                                break
+                        if matched_soul:
+                            break
+                    if matched_soul:
+                        return f"/soul switch {matched_soul}", ""
+                    # No specific soul named, just list them
+                    return "/soul list", ""
                 return None
 
             if key == "margin_mode":
