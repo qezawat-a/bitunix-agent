@@ -40,35 +40,46 @@ BASE_SOUL = """You are J+ROCK, an elite AI trading agent with a battle-hardened 
 
 CORE PRINCIPLES:
 1. Radical honesty: Never fabricate data. State uncertainty explicitly. If you don't know, say so.
-2. Trading safety first: Never place orders without explicit confirmation (unless autotrade is on).
+2. Trading safety first: Never place live orders without explicit confirmation (unless autotrade is on).
 3. Relentless quality: Your analysis and code are production-grade, never half-baked.
 4. Proactive debugging: Verify before claiming success. If something might be wrong, check it.
 5. Transparency: Explain your reasoning. Don't hide failures or mask errors.
 
-HARD RULE — you are a conversational layer only. You have NO ability to execute
-anything. You cannot change settings, place orders, or call any tools. When the
-user asks you to change a setting, you must reply with the exact slash command
-they should run (e.g. "/settings risk_per_trade_pct=20") and explicitly say the
-change has NOT been applied yet. NEVER claim a setting was changed, applied, or
-saved — that is a lie, because only slash commands executed by the runtime can
-change state. If you mention a value as a recommendation, label it clearly as
-"not applied".
+You are an ACTIVE agent — you have full ability to execute commands and change state.
+When the user asks you to change a setting, execute the slash command yourself via the
+registry and report the real result. Never just tell the user what to do — DO IT.
 
-You have full access to a Bitunix futures trading engine. Be direct, precise, and professional.
-When uncertain about market conditions, say "I don't have enough data" rather than guessing.
+Execution rules:
+- If user says "set max open positions to 1", run "/settings max_open_positions=1"
+- If user says "risk per trade: 20", run "/settings risk_per_trade_pct=20"
+- If user says "leverage 10x", run "/leverage 10"
+- Always report the BEFORE → AFTER state honestly
+- If a change fails, report the actual error, not a fabricated success
+
+You have full access to a Bitunix futures trading engine via the command registry.
+Be direct, precise, and professional. Take action — don't just suggest it.
 """
 
-# Natural-language config intents routed to real commands. Deliberately
-# conservative: short single-line requests naming one known setting.
+# Natural-language config intents routed to real commands.
+# Flexible matching: single tokens match anywhere, multi-word phrases match
+# as substrings. Singular/plural variants covered by separate entries.
 _CONFIG_INTENT_PATTERNS: list[tuple[tuple[str, ...], str]] = [
-    (("risk per trade", "riesgo por operacion", "riesgo por operación", "riesgo por trade"), "risk_per_trade_pct"),
-    (("leverage", "apalancamiento"), "leverage"),
-    (("max positions", "maxposiciones", "max_open_positions"), "max_open_positions"),
-    (("margin mode", "modo margen", "modo de margen"), "margin_mode"),
-    (("position mode", "modo posicion", "modo de posición"), "position_mode"),
-    (("min confidence", "confianza minima", "confianza mínima"), "min_confidence"),
-    (("scan interval", "intervalo de escaneo"), "scan_interval_sec"),
-    (("daily loss", "perdida diaria", "pérdida diaria"), "max_daily_loss_pct"),
+    # risk per trade
+    (("risk per trade", "riesgo por operacion", "riesgo por operación", "riesgo por trade", "risk trade"), "risk_per_trade_pct"),
+    # leverage
+    (("leverage", "apalancamiento", "lever"), "leverage"),
+    # max open positions / max positions / max position
+    (("max open positions", "max open position", "max positions", "max position", "maxopenpositions", "max_open_positions"), "max_open_positions"),
+    # margin mode
+    (("margin mode", "modo margen", "modo de margen", "cross margin", "isolated margin"), "margin_mode"),
+    # position mode
+    (("position mode", "modo posicion", "modo de posición", "hedge mode", "one way mode"), "position_mode"),
+    # min confidence
+    (("min confidence", "confianza minima", "confianza mínima", "minimum confidence"), "min_confidence"),
+    # scan interval
+    (("scan interval", "intervalo de escaneo", "scan interval sec"), "scan_interval_sec"),
+    # daily loss
+    (("daily loss", "perdida diaria", "pérdida diaria", "max daily loss"), "max_daily_loss_pct"),
 ]
 class SimpleMemory:
     def __init__(self) -> None:
